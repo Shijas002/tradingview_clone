@@ -64,11 +64,15 @@ _TIMEFRAME_LABELS: Dict[Timeframe, str] = {
 }
 
 
-def bucket_start(ts_seconds: int, timeframe: Timeframe) -> int:
+def bucket_start(ts_seconds: int, timeframe: Timeframe, anchor_s: int = 0) -> int:
     """
     Return the open time (seconds) of the bar that contains ``ts_seconds``.
 
-    * Intraday and daily bars: simple floor on the period.
+    * Intraday bars: floor on the period. ``anchor_s`` (seconds after 00:00 UTC)
+      shifts the grid so bars start at the exchange's session open - e.g. NSE opens
+      09:15 IST = 03:45 UTC, so ``anchor_s=13500`` gives 1h bars at 09:15, 10:15 ...
+      and 4h bars at 09:15, 13:15 IST, exactly like TradingView. 0 = clock aligned.
+    * Daily bars: 00:00 UTC (the anchor is ignored).
     * Weekly bars: start on Sunday 00:00 (MetaTrader 5 convention).
     * Monthly bars: start on the 1st of the month 00:00.
     """
@@ -84,7 +88,10 @@ def bucket_start(ts_seconds: int, timeframe: Timeframe) -> int:
             start = dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         return calendar.timegm(start.utctimetuple())
     period = timeframe.seconds
-    return ts_seconds - (ts_seconds % period)
+    if timeframe is Timeframe.D1 or not anchor_s:
+        return ts_seconds - (ts_seconds % period)
+    offset = anchor_s % period
+    return ts_seconds - ((ts_seconds - offset) % period)
 
 
 class Candle(BaseModel):

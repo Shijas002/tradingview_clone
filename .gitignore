@@ -13,7 +13,6 @@ backend/data/
 
 # Node (Phase 2)
 node_modules/
-frontend/dist/
 
 # OS / editors
 .DS_Store

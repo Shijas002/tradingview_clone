@@ -16,6 +16,7 @@ from app.providers.failover_provider import FailoverProvider
 from app.providers.mt5_provider import MT5Provider
 from app.providers.oanda_provider import OandaProvider
 from app.providers.simulated_provider import SimulatedProvider
+from app.providers.upstox_provider import UpstoxProvider
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,8 @@ class ProviderRegistry:
             return MT5Provider(self._settings)
         if name == "oanda":
             return OandaProvider(self._settings)
+        if name == "upstox":
+            return UpstoxProvider(self._settings)
         if name == "auto":
             # enabled_provider_list guarantees both sources exist and are built first
             return FailoverProvider(

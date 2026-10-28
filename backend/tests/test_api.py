@@ -19,6 +19,7 @@ def client(tmp_path):
         sim_tick_interval_ms=20,
         log_dir=str(tmp_path / "logs"),
         log_level="WARNING",
+        database_url=f"sqlite:///{(tmp_path / 'test.db').as_posix()}",
     )
     with TestClient(create_app(settings)) as c:
         yield c
@@ -90,3 +91,14 @@ def test_viewer_is_served(client):
     assert r.status_code == 200 and "text/html" in r.headers["content-type"]
     assert "LightweightCharts" in r.text and "/ws/market" in r.text
     assert client.get("/", follow_redirects=False).status_code == 307
+
+
+def test_frontend_app_is_served_when_built(client):
+    from app.main import FRONTEND_DIST
+
+    r = client.get("/app/")
+    if (FRONTEND_DIST / "index.html").exists():
+        assert r.status_code == 200 and '<div id="root">' in r.text
+        assert client.get("/", follow_redirects=False).headers["location"] == "/app/"
+    else:
+        assert r.status_code == 503

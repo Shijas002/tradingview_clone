@@ -271,6 +271,7 @@ def test_auto_provider_end_to_end_over_websocket(tmp_path, monkeypatch):
     settings = oanda_settings(
         enabled_providers="mt5,oanda,auto", default_provider="auto",
         mt5_server_utc_offset_hours="2", log_dir=str(tmp_path / "logs"), log_level="WARNING",
+        database_url=f"sqlite:///{(tmp_path / 'test.db').as_posix()}",
     )
     from app.main import create_app
 

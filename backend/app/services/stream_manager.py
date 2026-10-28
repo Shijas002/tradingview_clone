@@ -164,7 +164,7 @@ class StreamManager:
                 agg = tf_map.get(timeframe.value)
                 if agg is None:
                     seed_bars = await provider.get_history(symbol, timeframe, 1)
-                    agg = CandleAggregator(timeframe, seed_bars[-1] if seed_bars else None)
+                    agg = self._new_aggregator(provider, symbol, timeframe, seed_bars)
                     tf_map[timeframe.value] = agg
             except Exception:
                 # roll back the provider subscription if we were its only user
@@ -231,6 +231,16 @@ class StreamManager:
         }
 
     @staticmethod
+    def _new_aggregator(provider: Any, symbol: str, timeframe: Timeframe, seed_bars: Any) -> CandleAggregator:
+        """Aggregator using the provider's session alignment and volume type."""
+        return CandleAggregator(
+            timeframe,
+            seed_bars[-1] if seed_bars else None,
+            anchor_s=provider.session_anchor_s(symbol),
+            real_volume=provider.real_volume,
+        )
+
+    @staticmethod
     def _subscribed_message(key: SubKey, agg: Optional[CandleAggregator]) -> Dict[str, Any]:
         current = agg.current if agg is not None else None
         return {
@@ -255,7 +265,7 @@ class StreamManager:
                 session.enqueue(tick_msg)
 
         for tf_value, agg in list(self._aggregators.get(feed, {}).items()):
-            candle = agg.update(tick.price, tick.time_ms)
+            candle = agg.update(tick.price, tick.time_ms, tick.volume)
             if candle is None:
                 continue
             candle_msg = {
@@ -269,6 +279,11 @@ class StreamManager:
                 session = self._clients.get(cid)
                 if session is not None:
                     session.enqueue(candle_msg)
+
+    async def broadcast(self, message: Dict[str, Any]) -> None:
+        """Send a message to every connected client (alerts, data changes...)."""
+        for session in list(self._clients.values()):
+            session.enqueue(message)
 
     async def handle_status(self, status: ProviderStatus) -> None:
         message = {"type": "status", "data": status.model_dump(mode="json")}
@@ -302,7 +317,7 @@ class StreamManager:
                     continue
                 current = self._aggregators.get((p, symbol))
                 if current is not None and tf_value in current:
-                    current[tf_value] = CandleAggregator(Timeframe(tf_value), bars[-1] if bars else None)
+                    current[tf_value] = self._new_aggregator(provider, symbol, Timeframe(tf_value), bars)
         log.info("Re-seeded live candles for provider '%s'", provider_name)
 
     # ========================================================== shutdown

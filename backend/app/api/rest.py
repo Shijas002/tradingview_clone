@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Query, Request
 
 from app.core.config import Settings
-from app.core.exceptions import InvalidRequestError
+from app.core.exceptions import InvalidRequestError, SymbolNotFoundError
 from app.models.market import HistoryResponse, ProviderStatus, SymbolInfo, Timeframe
 from app.providers.mt5_provider import MT5Provider
 from app.providers.registry import ProviderRegistry
@@ -29,7 +29,7 @@ from app.services.stream_manager import StreamManager
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["market-data"])
 
-APP_VERSION = "0.2.0-phase1-failover"
+APP_VERSION = "0.4.0-phase4-upstox"
 
 
 def _registry(request: Request) -> ProviderRegistry:
@@ -107,7 +107,13 @@ async def history(
         raise InvalidRequestError(f"count must be <= HISTORY_MAX_BARS ({settings.history_max_bars})")
     prov = _registry(request).get(provider or settings.default_provider)
     to_dt = datetime.fromtimestamp(to, tz=timezone.utc) if to is not None else None
-    sym = prov.normalize_symbol(symbol)
+    try:
+        sym = prov.normalize_symbol(symbol)
+    except SymbolNotFoundError:
+        # Pine's request.security("OANDA:EURUSD", ...) style prefix -> try the bare name
+        if ":" not in symbol:
+            raise
+        sym = prov.normalize_symbol(symbol.split(":", 1)[1])
     candles = await prov.get_history(sym, timeframe, bars, to=to_dt)
     return HistoryResponse(
         provider=prov.name, symbol=sym, timeframe=timeframe, count=len(candles), candles=candles

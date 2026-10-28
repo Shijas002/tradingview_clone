@@ -35,6 +35,8 @@ class MarketDataProvider(ABC):
 
     #: unique short name used in URLs and WebSocket messages, e.g. "mt5"
     name: str = "base"
+    #: True when Tick.volume is real traded quantity (exchange feeds); False = tick volume
+    real_volume: bool = False
 
     def __init__(self) -> None:
         self.log = logging.getLogger(f"app.providers.{self.name}")
@@ -99,6 +101,13 @@ class MarketDataProvider(ABC):
     def normalize_symbol(self, symbol: str) -> str:
         """Return the provider's canonical spelling of ``symbol`` (identity by default)."""
         return symbol.strip()
+
+    def session_anchor_s(self, symbol: str) -> int:
+        """
+        Seconds after 00:00 UTC where the symbol's trading session opens, used to
+        align intraday bars (see ``bucket_start``). 0 = clock-aligned bars (24h markets).
+        """
+        return 0
 
     # ------------------------------------------------- ref-counted subscribe
     async def acquire(self, symbol: str) -> str:

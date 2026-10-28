@@ -19,7 +19,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BASE_DIR: Path = Path(__file__).resolve().parents[2]
 ENV_FILE: Path = BASE_DIR / ".env"
 
-SUPPORTED_PROVIDERS = {"simulated", "mt5", "oanda", "auto"}
+SUPPORTED_PROVIDERS = {"simulated", "mt5", "oanda", "upstox", "auto"}
+UPSTOX_EXCHANGES = ("NSE", "BSE", "MCX")
 
 
 class Settings(BaseSettings):
@@ -40,10 +41,12 @@ class Settings(BaseSettings):
     uvicorn_reload: bool = False
     log_level: str = "INFO"
     log_dir: str = "logs"
+    # Runtime files (MT5 offset, Upstox login + instrument cache). Relative = inside backend/
+    data_dir: str = "data"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     # ------------------------------------------------------------ providers
-    enabled_providers: str = "simulated,mt5,oanda,auto"
+    enabled_providers: str = "simulated,mt5,oanda,upstox,auto"
     default_provider: str = "auto"
     history_max_bars: int = Field(default=5000, ge=10, le=100_000)
     history_default_bars: int = Field(default=500, ge=1, le=100_000)
@@ -69,6 +72,22 @@ class Settings(BaseSettings):
     oanda_request_timeout_s: float = Field(default=15.0, ge=1.0)
     oanda_reconnect_max_delay_s: float = Field(default=30.0, ge=1.0)
 
+    # --------------------------------------------------------------- Upstox
+    # Option A (easiest): a 1-year read-only Analytics Token from the Upstox developer console.
+    upstox_analytics_token: str = ""
+    # Option B: daily login through the app (API key + secret of your Upstox app).
+    upstox_api_key: str = ""
+    upstox_api_secret: str = ""
+    upstox_redirect_uri: str = "http://127.0.0.1:8000/api/broker/upstox/callback"
+    # Instrument lists to load (symbol search): any of NSE, BSE, MCX
+    upstox_exchanges: str = "NSE,BSE,MCX"
+    # Options contracts add ~100k symbols; off by default (futures, stocks, indices are always loaded)
+    upstox_include_options: bool = False
+    # "full" = price + best bid/ask + real volume, "ltpc" = price + last traded quantity only
+    upstox_feed_mode: str = "full"
+    upstox_request_timeout_s: float = Field(default=20.0, ge=1.0)
+    upstox_reconnect_max_delay_s: float = Field(default=60.0, ge=1.0)
+
     # ------------------------------------------------------------- failover
     failover_primary: str = "mt5"
     failover_fallback: str = "oanda"
@@ -80,6 +99,23 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------ websocket
     ws_client_queue_size: int = Field(default=2000, ge=10)
+
+    # ------------------------------------------------------------- database
+    # SQLite file for layouts, drawings, scripts, alerts (and the journal in Phase 5).
+    database_url: str = "sqlite:///./data/tradingview.db"
+
+    # --------------------------------------------------------------- alerts
+    # Optional: every triggered alert is also POSTed as JSON to this URL (Discord/Slack/n8n/...)
+    alert_webhook_url: str = ""
+
+    # ------------------------------------------------------- Notion journal
+    # Internal integration secret (starts with "ntn_") from notion.so/profile/integrations
+    notion_api_key: str = ""
+    # Database (or data source) ID - or the database's full URL - shared with the integration
+    notion_database_id: str = ""
+    # Alternative: a page shared with the integration; the journal database is created there for you
+    notion_parent_page_id: str = ""
+    notion_request_timeout_s: float = Field(default=30.0, ge=1.0)
 
     # ---------------------------------------------------------- validators
     @field_validator("log_level")
@@ -107,6 +143,41 @@ class Settings(BaseSettings):
         value = value.strip().lower()
         if value not in {"practice", "live"}:
             raise ValueError("OANDA_ENVIRONMENT must be 'practice' or 'live'")
+        return value
+
+    @field_validator("upstox_feed_mode")
+    @classmethod
+    def _validate_upstox_mode(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in {"full", "ltpc"}:
+            raise ValueError("UPSTOX_FEED_MODE must be 'full' or 'ltpc'")
+        return value
+
+    @field_validator("upstox_exchanges")
+    @classmethod
+    def _validate_upstox_exchanges(cls, value: str) -> str:
+        names = [x.strip().upper() for x in value.split(",") if x.strip()]
+        bad = [x for x in names if x not in UPSTOX_EXCHANGES]
+        if bad:
+            raise ValueError(f"UPSTOX_EXCHANGES has unknown exchange(s) {bad}; use any of {', '.join(UPSTOX_EXCHANGES)}")
+        if not names:
+            raise ValueError("UPSTOX_EXCHANGES must list at least one of NSE, BSE, MCX")
+        return ",".join(dict.fromkeys(names))
+
+    @field_validator("notion_api_key", "notion_database_id", "notion_parent_page_id")
+    @classmethod
+    def _strip_notion(cls, value: str) -> str:
+        value = value.strip().strip('"').strip("'")
+        if any(ch.isspace() for ch in value):
+            raise ValueError("Notion keys/IDs must be on one line without spaces")
+        return value
+
+    @field_validator("upstox_analytics_token", "upstox_api_key", "upstox_api_secret", "upstox_redirect_uri")
+    @classmethod
+    def _strip_upstox(cls, value: str) -> str:
+        value = value.strip().strip('"').strip("'")
+        if any(ch.isspace() for ch in value):
+            raise ValueError("Upstox keys/tokens must not contain spaces or line breaks - paste the value on one line")
         return value
 
     @field_validator("mt5_server_utc_offset_hours")
@@ -188,7 +259,35 @@ class Settings(BaseSettings):
 
     @property
     def data_path(self) -> Path:
-        return BASE_DIR / "data"
+        path = Path(self.data_dir)
+        return path if path.is_absolute() else BASE_DIR / path
+
+    @property
+    def database_url_resolved(self) -> str:
+        """Make relative SQLite paths relative to the backend folder (not the current directory)."""
+        url = self.database_url.strip()
+        prefix = "sqlite:///"
+        if url.startswith(prefix) and not url.startswith("sqlite:////"):
+            raw = url[len(prefix):]
+            if raw and raw != ":memory:":
+                path = Path(raw)
+                if not path.is_absolute():
+                    path = (BASE_DIR / path).resolve()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                return f"{prefix}{path.as_posix()}"
+        return url
+
+    @property
+    def notion_configured(self) -> bool:
+        return bool(self.notion_api_key and (self.notion_database_id or self.notion_parent_page_id))
+
+    @property
+    def upstox_exchange_list(self) -> List[str]:
+        return [x for x in self.upstox_exchanges.split(",") if x]
+
+    @property
+    def upstox_oauth_configured(self) -> bool:
+        return bool(self.upstox_api_key and self.upstox_api_secret and self.upstox_redirect_uri)
 
     @property
     def mt5_credentials_configured(self) -> bool:

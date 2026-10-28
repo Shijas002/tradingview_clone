@@ -36,3 +36,9 @@ class ProviderUnavailableError(DataBridgeError):
 
 class ProviderConnectionError(ProviderUnavailableError):
     """Raised while trying to (re)connect to a data source."""
+
+
+class NotFoundError(DataBridgeError):
+    """A stored object (script, alert, journal entry...) does not exist."""
+
+    status_code = 404

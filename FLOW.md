@@ -143,6 +143,10 @@ This document explains **how data moves** through the backend and **what every f
   - `{"action":"ping","ts":1700000000000}`
 - **Server → client**
   - `welcome`: `client_id`, `providers[]`, `timeframes[]`
+  - `alert`: `data{alert_id, name, symbol, condition, price, level, message, triggered_at}` (Phase 3)
+  - `alerts_changed`: alerts were created, edited, triggered or expired (Phase 3)
+  - `journal_changed`: a journal entry was added, edited, synced or deleted (Phase 5)
+  - `journal_status`: the Notion connection state changed (Phase 5)
   - `subscribed`: `provider`, `symbol`, `timeframe`, `candle` (the current forming bar)
   - `unsubscribed`: `provider`, `symbol`, `timeframe`
   - `tick`: `data{provider, symbol, time_ms, bid, ask, last, volume, price}`
@@ -161,6 +165,11 @@ This document explains **how data moves** through the backend and **what every f
 - MT5 times are **broker server time** and are passed through unchanged, so the chart matches your MT5 terminal exactly.
 - Weekly bars start on **Sunday 00:00**, and monthly bars start on the **1st**. Both match MT5.
 - Candle `volume` is **tick volume** (number of ticks), which matches MT5's `tick_volume`.
+- **Upstox (Phase 4):**
+  - Times are **real UTC**. Volume is **real traded quantity**.
+  - Intraday bars are anchored to the session open: 09:15 IST for NSE/BSE, 09:00 IST for MCX.
+  - Daily, weekly and monthly bars are stamped 00:00 UTC of their Indian trading date.
+- **What the chart shows:** the chart *displays* times in the zone chosen in ⚙ → Time zone (default "Exchange": IST for Upstox, broker time for MT5/auto, UTC otherwise). The stored timestamps never change.
 
 ---
 
@@ -172,6 +181,8 @@ This document explains **how data moves** through the backend and **what every f
 - **`TUTORIAL.md`**: step-by-step Windows setup and troubleshooting.
 - **`FLOW.md`**: this document.
 - **`FAILOVER.md`**: OANDA fallback setup and behaviour.
+- **`GUIDE.md`**: how to use the chart app.
+- **`frontend/`**: the React chart app (see section 10).
 - **`.gitignore`**: keeps `.env`, logs, virtual environments, and `node_modules` out of git.
 
 ### `backend/` (top level)
@@ -208,7 +219,7 @@ This document explains **how data moves** through the backend and **what every f
   - `MarketDataProvider`: the abstract interface every data source implements (`connect`, `disconnect`, `get_symbols`, `get_history`, `subscribe`, `unsubscribe`).
   - Supports multiple tick and status listeners, plus reference-counted `acquire` / `release` so several consumers can share one subscription.
   - `normalize_symbol()` gives each provider its own canonical symbol spelling.
-  - **Phase 4 adds a broker by writing one new class that implements this interface.**
+  - `session_anchor_s(symbol)` (session-aligned bars) and `real_volume` (exchange volume instead of tick volume) are used by Upstox.
 - **`mt5_provider.py`**
   - Wraps the `MetaTrader5` package.
   - Runs every MT5 call on one dedicated thread, because the package is blocking and not thread-safe.
@@ -225,6 +236,7 @@ This document explains **how data moves** through the backend and **what every f
 - **`failover_provider.py`**
   - The `auto` provider: health checks, switching, switch-back delay, and tick re-labelling.
   - History comes from the active source first, then the other.
+- **`upstox_provider.py`, `upstox_auth.py`, `upstox_instruments.py`, `upstox_feed.py`**: the Indian broker (see section 12).
 - **`registry.py`**
   - Builds the providers listed in `ENABLED_PROVIDERS` (`auto` is always built last, on top of its two sources).
   - `connect_all()` connects them, and one failing provider never blocks the others.
@@ -244,6 +256,8 @@ This document explains **how data moves** through the backend and **what every f
 ### `backend/app/api/` (HTTP and WebSocket layer)
 
 - **`rest.py`**: `/api/health`, `/api/providers`, `/api/providers/{name}/reconnect`, `/api/timeframes`, `/api/symbols`, `/api/history`, `/api/stream/stats`.
+- **`broker.py`** (Phase 4): Upstox login endpoints. See section 12.
+- **`journal.py`** (Phase 5): trade journal endpoints. See section 13.
 - **`websocket.py`**: `/ws/market`. Validates incoming JSON, dispatches it to the StreamManager, and returns errors as `{"type":"error"}` messages instead of closing the socket.
 
 ### `backend/app/static/`
@@ -264,6 +278,8 @@ This document explains **how data moves** through the backend and **what every f
 
 - **`check_mt5.py`**: a standalone MT5 diagnostic covering Python bitness, package, path, login, a live tick, and history. Run it before starting the server.
 - **`check_oanda.py`**: an OANDA diagnostic covering token, account, symbol mapping, candles, and live prices.
+- **`check_notion.py`**: a Notion diagnostic covering key, database lookup or creation, columns, and an optional `--test` page.
+- **`check_upstox.py`**: an Upstox diagnostic covering configuration, login, instrument lists, daily and 5-minute candles, and the live stream.
 - **`ws_test_client.py`**: a command-line viewer for the live WebSocket stream (`--provider`, `--symbol`, `--timeframe`, `--seconds`, `--no-ticks`).
 
 ### `backend/tests/` (automated checks)
@@ -271,14 +287,269 @@ This document explains **how data moves** through the backend and **what every f
 - **`test_candle_aggregator.py`**: bar bucketing (intraday, weekly, monthly), candle building, seeding, and late ticks.
 - **`test_api.py`**: end-to-end REST, WebSocket, and viewer-page tests using the simulator, so they run without MT5.
 - **`test_failover.py`**: a fake OANDA API plus a stub MT5. Covers symbol mapping, time shift, streaming, failover and switch-back, and a full app run.
+- **`test_persistence_alerts.py`**: workspace, drawings, scripts, backup, and the alert engine (Phase 3).
+- **`test_journal.py`**: journal CRUD, P&L/R, stats, CSV, screenshots and backup, plus a fake Notion API covering setup, missing columns, create/update/screenshot/trash, validation errors and retry, database auto-creation, and bad token/unshared database (Phase 5).
+- **`test_upstox.py`**: a fake Upstox API, instrument CDN and WebSocket, plus protobuf fixtures made with Upstox's official schema. Covers decoding, session alignment, instruments and search, chunked history, live ticks with real volume, the OAuth flow, and the broker endpoints (Phase 4).
 
 ---
 
-## 10. How future phases plug in
+## 10. Frontend (Phase 2): how the chart app works
 
-- **Phase 2 (frontend):** a new `frontend/` folder (React + Vite).
-  - It calls `/api/history` for the initial bars and `/api/history?to=` when you scroll back.
-  - It subscribes over `/ws/market` and feeds `candle` messages into `series.update()`.
-- **Phase 3 (SQLite):** adds `app/db/` and `app/api/layouts.py` for CRUD on charts, drawings, and indicators.
-- **Phase 4 (broker):** adds `app/providers/<broker>_provider.py` and one line in `registry.py`. Nothing else changes.
-- **Phase 5 (Notion):** adds `app/services/notion_journal.py` and `app/api/journal.py`.
+```
+ React components (UI)            Chart engine (imperative)                 Workers / backend
+ ─────────────────────            ─────────────────────────                 ─────────────────
+ App ─ TopBar, DrawingToolbar      ChartController (one per chart) ───────► REST /api/history
+     ─ ChartGrid ─ ChartPane ────►   ├─ main series + volume                WebSocket /ws/market
+     ─ Watchlist, BottomPanel        ├─ DrawingManager + DrawingsPrimitive  (via api/stream.js)
+     ─ dialogs, ContextMenu          ├─ IndicatorRuntime (per script) ────► pine.worker.js (PineTS)
+          ▲                          │     └─ PinePrimitive (fills, shapes, labels…)   └─ request.security
+          │ zustand store            └─ bar replay                                       → /api/history
+          └──────── persisted workspace (localStorage; SQLite in Phase 3)
+```
+
+- **Loading a chart:** `ChartPane` calls `ChartController.load()`.
+  1. It fetches 1000 bars from `/api/history`.
+  2. It sends the bars to the Pine worker.
+  3. It subscribes to `/ws/market`.
+- **Live candles** do three things:
+  - update the main series and volume,
+  - append the bar in the worker,
+  - schedule indicator recalculation (immediately on a new bar, otherwise at most once per second).
+- **Indicators:** each one is an `IndicatorRuntime`.
+  - It asks the worker to run its Pine source with the chosen inputs.
+  - It turns `plot()` into chart series and `hline()` into price lines.
+  - Everything else (fill, bgcolor, shapes, labels, lines, boxes, tables, trades) is drawn by a `PinePrimitive`.
+  - Non-overlay scripts get their own pane.
+- **Drawings:** stored as `{time, price}` points per symbol in the store.
+  - `DrawingManager` handles mouse creation, selection, dragging and hit-testing.
+  - It renders inside a chart primitive, so drawings move and zoom with the chart.
+- **Pine Editor:** compiles in the worker (`inspect`), then saves the script to the store. Every chart instance of the script updates.
+
+### Frontend file reference (`frontend/src/`)
+
+- **`main.jsx`, `App.jsx`**: entry point, app shell, bootstrapping (providers + stream), keyboard shortcuts, dialogs.
+- **`styles.css`**: TradingView-like dark/light theme.
+- **`api/client.js`**: REST helpers (`getProviders`, `getSymbols`, `getHistory`).
+- **`api/stream.js`**: shared WebSocket client with reference-counted subscriptions and auto-reconnect.
+- **`store/useStore.js`**: zustand store holding layout, panes, indicators, drawings (with undo/redo), watchlist, scripts and settings, persisted.
+- **`utils/market.js`**: timeframes, chart types, formatting, Heikin Ashi, time↔bar-index maths, colors.
+- **`chart/ChartController.js`**: one chart. Handles series, chart types, history and scroll-back, live updates, panes, bar replay, coordinate conversion and mouse routing.
+- **`chart/registry.js`**: paneId → controller map.
+- **`chart/drawings/tools.js`**: tool catalogue, default styles, Fib levels.
+- **`chart/drawings/geometry.js`**: hit-test and drawing helpers.
+- **`chart/drawings/DrawingManager.js`**: drawing model, interaction state machine and canvas rendering for all 16 tools.
+- **`chart/drawings/DrawingsPrimitive.js`**: plugs the manager into lightweight-charts (renderer, price-axis labels, cursor hit-test).
+- **`chart/pine/IndicatorRuntime.js`**: runs one Pine script and maps its result onto the chart.
+- **`chart/pine/PinePrimitive.js`**: renders bgcolor, fill, plotshape/char/arrow, label, line, box, polyline, linefill, table and strategy trades.
+- **`pine/pine.worker.js`**: Web Worker running PineTS. Includes a market-data provider so `request.security` can fetch other timeframes.
+- **`pine/pineClient.js`**: promise wrapper for the worker, plus error-location parsing.
+- **`pine/builtins.js`**: the 35 built-in indicators and strategies (Pine v6 sources) and the editor templates.
+- **`editor/pineLanguage.js`**: Pine syntax highlighting and autocomplete for CodeMirror.
+- **`components/`**
+  - `TopBar.jsx`, `DrawingToolbar.jsx`, `ChartGrid.jsx`
+  - `ChartPane.jsx`: legend, quote, replay bar
+  - `DrawingStyleBar.jsx`, `Watchlist.jsx`, `BottomPanel.jsx`, `PineEditor.jsx`, `StrategyTester.jsx`, `StatusBar.jsx`, `ContextMenu.jsx`
+  - `ui.jsx`: dropdown, modal, buttons
+  - `Icons.jsx`: SVG icons
+- **`components/dialogs/`**: `SymbolSearch`, `IndicatorsDialog`, `IndicatorSettings`, `ChartSettings`, `TextDialog`.
+- **`__tests__/`**: unit tests for maths, drawing interactions and every built-in Pine script (`npm test`).
+
+### Backend changes for Phase 2
+
+- **`app/main.py`**: serves `frontend/dist` at `/app/`, and `/` redirects there.
+
+---
+
+## 11. Persistence & alerts (Phase 3)
+
+```
+ Browser (zustand store) ── serverSync.js ──► PUT /api/workspace, /api/drawings/{key}, /api/scripts/{id}
+          ▲                    (debounced 0.7 s, only what changed)          │
+          └── startup: GET /api/workspace + /api/drawings + /api/scripts ◄───┤  SQLite
+                                                                             │  backend/data/tradingview.db
+ Alert dialog ──► POST /api/alerts ──► AlertEngine.reload() ─────────────────┘
+                                         │ acquires the symbol feed (ref-counted)
+ provider ticks ──► AlertEngine._on_tick ─┴─► condition met? ──► AlertEvent row
+                                                              ├─► WebSocket {"type":"alert"} → toast/sound/notification
+                                                              └─► POST ALERT_WEBHOOK_URL (optional)
+```
+
+- **Startup**
+  - The app loads the workspace from SQLite, then picks providers.
+  - On the very first run the browser's existing Phase 2 data is uploaded instead.
+- **Saving:** every change to layout, charts, indicators, drawings, watchlist, scripts or settings is debounced and written back. Failed writes retry every 5 s.
+- **Alerts**
+  - Alerts live in the `alerts` table.
+  - The engine holds only *active* alerts in memory, grouped by symbol feed.
+  - It compares each tick with the previous one to detect crossings.
+  - Trend-line alerts compute the line's price at the tick time.
+  - "Once" alerts become **triggered**; others respect their cool-down (1 min or 1 s).
+  - Expired alerts are switched off every 10 s.
+
+### Backend files (Phase 3)
+
+- **`app/db/database.py`**: SQLAlchemy engine (SQLite with WAL), session helper, `create_all()` on startup.
+- **`app/db/models.py`**: tables `workspaces`, `drawings`, `scripts`, `alerts`, `alert_events` (JSON columns keep the UI's structures as-is).
+- **`app/api/persistence.py`**: workspace, drawings and scripts CRUD, plus export/import.
+- **`app/api/alerts.py`**: alerts CRUD, trigger log, engine status, test notification.
+- **`app/services/alert_engine.py`**: tick-driven evaluation, feed subscriptions, event storage, WebSocket broadcast, webhook.
+- **`app/services/stream_manager.py`**: new `broadcast()` used for `alert` / `alerts_changed` messages.
+- **`tests/test_persistence_alerts.py`**: storage round-trips, backup/restore, validation, conditions, and a live alert over the WebSocket.
+
+### Frontend files (Phase 3)
+
+- **`store/serverSync.js`**: load from and save to the backend (diff-based, debounced, retrying).
+- **`alerts/alerts.js`**: loading, notifications (toast, two-tone sound, browser notification), helpers.
+- **`components/dialogs/AlertDialog.jsx`**: create/edit alerts (price, channel, trend line; trigger, expiry, message).
+- **`components/AlertsPanel.jsx`**: alert list (pause/resume/edit/test/delete) and trigger log.
+- **`components/RightPanel.jsx`**: Watchlist / Alerts tabs.
+- **`chart/ChartController.js`**: `setAlertLines()` draws active alerts as dashed 🔔 price lines.
+
+---
+
+## 12. Indian broker: Upstox (Phase 4)
+
+### Login
+
+```
+Option A  .env UPSTOX_ANALYTICS_TOKEN (1 year, read-only) ─────────────┐
+                                                                       ▼
+Option B  [Log in to Upstox] → GET /api/broker/upstox/login         UpstoxAuth.active_token()
+          → 302 to api.upstox.com/v2/login/authorization/dialog         │
+            (client_id, redirect_uri, random state)                     │
+          ← user logs in at Upstox                                      │
+          → GET /api/broker/upstox/callback?code&state                  │
+          → state checked, POST /v2/login/authorization/token           │
+          → token + expiry (next 03:30 IST) saved in                    │
+            backend/data/upstox_token.json (no name / e-mail)  ─────────┘
+          → provider.on_auth_changed() restarts the live stream
+          → the popup closes and the browser refreshes /api/broker/status
+```
+
+- Any HTTP 401 from Upstox marks that token as rejected. The status bar then asks for a new login, and the old token is never retried.
+
+### Symbols
+
+```
+assets.upstox.com/.../NSE.json.gz, BSE.json.gz, MCX.json.gz   (public, refreshed by Upstox ~06:00 IST)
+  → cached in backend/data/upstox/ (re-downloaded once a day)
+  → parse_instruments(): keep EQ, INDEX, FUT (+ CE/PE if UPSTOX_INCLUDE_OPTIONS)
+  → "NSE:RELIANCE" ⇄ "NSE_EQ|INE002A01018", digits from tick_size (paise), session anchor
+```
+
+### History (`GET /api/history?provider=upstox&symbol=NSE:RELIANCE&timeframe=H1`)
+
+```
+latest page:  GET /v3/historical-candle/intraday/{key}/minutes/60      (today)
+always:       GET /v3/historical-candle/{key}/minutes/60/{to}/{from}   (≤ 1 quarter per call;
+              1–15 min ≤ 1 month, daily ≤ 1 decade) - repeated backwards until `count` bars
+→ rebucket(): IST → UTC, session-anchored bars (4h is built from 1h), D/W/M on the IST date
+```
+
+### Live
+
+```
+GET /v3/feed/market-data-feed/authorize  → wss URL
+WebSocket ── binary JSON {"guid","method":"sub","data":{"mode":"full","instrumentKeys":[...]}}
+          ◄─ protobuf FeedResponse (market_info, initial_feed, live_feed)
+upstox_feed.decode_feed_response()  → ltp, ltt, bid/ask, vtt (total day volume)
+→ Tick(price=ltp, volume=vtt delta, time=last trade time) → StreamManager → CandleAggregator
+  (anchor 09:15 IST, real volume) → browser
+market_info → status "Live - NSE open, BSE closed, MCX pre-open"
+```
+
+- Reconnects use back-off. Subscriptions are re-sent after a reconnect. A login change restarts the stream immediately.
+
+### Backend files (Phase 4)
+
+- **`app/providers/upstox_provider.py`**: the provider.
+  - Supervisor (instruments → token → stream).
+  - Chunked history plus `rebucket()`.
+  - Subscriptions and feed-to-tick conversion.
+  - Market status.
+- **`app/providers/upstox_auth.py`**: picks the token (Analytics Token or the stored OAuth login), builds the login URL with a one-time `state`, exchanges the code, handles 03:30 IST expiry and rejected tokens.
+- **`app/providers/upstox_instruments.py`**: download, cache and parse the instrument files. Provides `resolve()` (accepts `NSE:X`, `X`, `NSE_EQ:X` or an instrument key) and ranked `search()`.
+- **`app/providers/upstox_feed.py`**: a dependency-free protobuf wire-format decoder for `MarketDataFeedV3.proto` (only the fields the chart needs; unknown fields are skipped).
+- **`app/api/broker.py`**: `/api/broker/status`, `/upstox/login`, `/upstox/callback` (small HTML result page that closes the popup), `/upstox/logout`.
+- **Changed files**
+  - `models/market.py`: `bucket_start(..., anchor_s)`.
+  - `candle_aggregator.py`: anchor and real volume.
+  - `stream_manager.py`: builds aggregators from the provider's anchor and volume type.
+  - `rest.py`: strips a Pine-style `EXCHANGE:` prefix for providers that don't use it.
+  - `config.py`: `UPSTOX_*` settings and `DATA_DIR`.
+
+### Frontend files (Phase 4)
+
+- **`src/broker/broker.js`, `src/broker/BrokerLogin.jsx`**: broker status in the store, the login popup (postMessage + polling), logout, and the "Log in to Upstox" button. The button appears in the status bar, symbol search, chart error box and ⚙ settings.
+- **`src/chart/timezone.js`, `src/chart/useChartZone.js`**: the chart time zone.
+  - Undoes the MT5 server-time shift.
+  - Provides the formatters for lightweight-charts (`timeFormatter`, `tickMarkFormatter`), the status-bar clock and the trade list.
+- **`ChartController.setTimezone()`**, the **Time zone** select and the **Indian broker** box in Chart settings.
+- **`pine/pine.worker.js`**:
+  - `NSE:` / `BSE:` / `MCX:` string literals survive PineTS (which drops the exchange in `request.security`).
+  - Indian symbols get `syminfo.currency = "INR"` and the Asia/Kolkata timezone.
+
+---
+
+## 13. Trade journal + Notion (Phase 5)
+
+### Logging a trade
+
+```
+Alt+J / "Log trade" / 📓 on a Long-Short drawing / right-click "Log trade at" / 📓 in Strategy Tester
+  → JournalDialog (pre-filled from the chart, the drawing or the backtest trade;
+                   a chart screenshot is captured automatically)
+  → POST /api/journal  {side, entry/exit, qty, SL/TP, fees, setup, tags, rating, notes, screenshot: data:URL}
+  → SQLite journal_entries row + image in backend/data/journal/<id>-<n>.png
+    notion_status = "pending" (Notion configured) or "local"
+  → broadcast {"type":"journal_changed"}  → every open tab reloads the Journal tab
+```
+
+### Notion mirror (`NotionJournal` worker)
+
+```
+startup: GET /v1/users/me (key ok?) → GET /v1/databases/{id} → data_sources[0].id
+         (or GET /v1/data_sources/{id}, or POST /v1/databases on NOTION_PARENT_PAGE_ID)
+       → GET /v1/data_sources/{ds}  → PATCH it with any missing journal columns
+loop:  rows with notion_status pending/deleting, oldest first, ~3 requests/s
+  new      → POST /v1/pages {parent: data_source_id, properties}
+  edited   → PATCH /v1/pages/{id} {properties}   (page deleted in Notion → created again)
+  image    → POST /v1/file_uploads → POST …/send (multipart) → "Screenshot" files property
+             + PATCH /v1/blocks/{page}/children (image block; the old one is deleted on change)
+  deleted  → PATCH /v1/pages/{id} {"in_trash": true} → row removed locally
+  429/5xx/network → wait (Retry-After) and retry;  400 → entry "error" + message (Retry in the UI)
+```
+
+- The database is the queue, so nothing is lost if the backend stops or Notion is down. Pending entries sync on the next start.
+- **Columns written:**
+  - Trade (title)
+  - Symbol, Side, Status, Result
+  - Entry/Exit Time, Entry, Exit, Quantity, Stop Loss, Take Profit, Fees, P&L, R Multiple
+  - Setup, Tags, Rating, Timeframe, Provider, Notes, Screenshot, Journal ID
+- **P&L** = (exit − entry) × quantity × (+1 long / −1 short) − fees. **R** = (exit − entry) × direction ÷ |entry − stop|.
+- **Times** are stored as real UTC. Drawing and backtest times from MT5/auto charts are converted from broker time.
+
+### Backend files (Phase 5)
+
+- **`app/db/models.py`**: `JournalEntry` (trade fields + Notion state: page id/url, status, error, image block, screenshot versions).
+- **`app/api/journal.py`**: CRUD, screenshot upload (PNG/JPEG/WebP ≤ 8 MB, magic-byte checked), stats, CSV, Notion status/retry/sync.
+- **`app/services/notion_journal.py`**: the Notion client and sync worker (`SCHEMA`, `parse_notion_id`, `trade_metrics`).
+- **`app/api/persistence.py`**: backup export/import now includes the journal (without the image files).
+
+### Frontend files (Phase 5)
+
+- **`src/journal/journal.js`**:
+  - loading (debounced on `journal_changed`)
+  - `captureChart()`: chart image with a title bar
+  - drafts from pane, drawing or backtest trade
+  - P&L preview and time formatting in the chart time zone
+- **`src/components/JournalPanel.jsx`**: stats, filters, search, trade table, sync icons, Notion chip, close/edit/delete, CSV.
+- **`src/components/dialogs/JournalDialog.jsx`**: the log/edit form with live R:R, risk and P&L, plus screenshot capture.
+- **Entry points:** `BottomPanel` (Journal tab), `DrawingStyleBar` (📓), `StrategyTester` (📓 per trade), `ContextMenu`, `App.jsx` (Alt+J, stream events).
+
+---
+
+## 14. How future phases plug in
+
+- **Another Indian broker (Kite, Angel One):** add `app/providers/<broker>_provider.py` implementing `MarketDataProvider` (use `upstox_provider.py` as the template), add its name to `SUPPORTED_PROVIDERS` and one line in `registry.py`.
+- **More journal fields:** add a column to `JournalEntry`, the field to `JournalBase` in `api/journal.py`, and an entry in `SCHEMA` + `_properties()` in `notion_journal.py`. The Notion column is created automatically on the next start.
