@@ -12,6 +12,12 @@ export const CONDITIONS = [
   { v: "exiting_channel", l: "Exiting channel" },
 ];
 export const CONDITION_LABEL = Object.fromEntries(CONDITIONS.map((c) => [c.v, c.l]));
+export const FREQUENCIES = [
+  { v: "once_per_bar_close", l: "Once per bar close" },
+  { v: "once_per_bar", l: "Once per bar" },
+  { v: "once", l: "Only once" },
+];
+export const FREQUENCY_LABEL = Object.fromEntries(FREQUENCIES.map((f) => [f.v, f.l]));
 export const TRIGGERS = [
   { v: "once", l: "Only once" },
   { v: "once_per_minute", l: "Once per minute" },
@@ -87,11 +93,33 @@ export function alertBody(a, patch = {}) {
     expires_at: a.expires_at && a.expires_at > Date.now() ? a.expires_at : null,
     drawing_id: a.drawing_id,
     active: a.active,
+    notify_telegram: a.notify_telegram !== false,
+    kind: a.kind || "price",
+    timeframe: a.timeframe || null,
+    script_name: a.script_name || "",
+    script_source: a.script_source || null,
+    script_inputs: a.script_inputs || null,
+    target: a.target || null,
+    target2: a.target2 || null,
+    frequency: a.frequency || "once_per_bar_close",
     ...patch,
   };
 }
 
+export function describeTarget(a, digits = 5) {
+  const [kind, ...rest] = String(a.target || "").split(":");
+  const name = rest.join(":");
+  if (kind === "alertcondition") return `alertcondition “${name}”`;
+  if (kind === "alert") return "any alert() call";
+  const cond = CONDITION_LABEL[a.condition] || a.condition;
+  const other = a.target2 ? a.target2.split(":").slice(1).join(":") : a.price2 !== null && a.price2 !== undefined ? `${a.price} – ${a.price2}` : String(a.price);
+  return `${name} ${cond.toLowerCase()} ${other}`;
+}
+
 export function describeAlert(a, digits = 5) {
+  if (a.kind === "indicator") {
+    return `${a.script_name || "Script"} (${a.timeframe || ""}) · ${describeTarget(a, digits)} · ${FREQUENCY_LABEL[a.frequency] || a.frequency}`;
+  }
   const cond = CONDITION_LABEL[a.condition] || a.condition;
   if (a.line) return `${cond} trend line`;
   if (a.price2 !== null && a.price2 !== undefined) return `${cond} ${Number(a.price).toFixed(digits)} – ${Number(a.price2).toFixed(digits)}`;

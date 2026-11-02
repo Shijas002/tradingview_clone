@@ -138,8 +138,10 @@ Run these commands in PowerShell:
 
 ## Step 8: Run the automated tests
 
+- **Updating from an older version?** Run `pip install -r requirements-dev.txt` first. v1.1 adds `mini-racer`, which runs Pine Script on the backend for indicator alerts.
+
 - `pytest`
-- **✅ Check:** you see `42 passed`. These tests use the simulator and fake MT5/OANDA/Upstox servers, so they pass without any account.
+- **✅ Check:** you see `57 passed`. These tests use the simulator and fake MT5/OANDA/Upstox servers, so they pass without any account.
 
 ---
 
@@ -317,6 +319,48 @@ The **Journal** tab works without Notion: every trade is saved in `backend\data\
 
 ---
 
+## Step 17 (optional): Telegram notifications 📲
+
+Get alerts, paper fills and imported trades on your phone.
+
+- **Step 17.1: Create a bot**
+  - In Telegram, open **@BotFather** → send `/newbot` → choose a name and a username ending in `bot`.
+  - BotFather replies with a **token** like `123456789:AAE...`.
+  - In `backend\.env`, paste it below the comment: `TELEGRAM_BOT_TOKEN=123456789:AAE...`
+- **Step 17.2: Find your chat id**
+  - Open your new bot in Telegram and press **Start** (or send any message). For a group: add the bot to the group and send a message there.
+  - Restart the backend, then open **http://127.0.0.1:8000/api/notify/telegram/chats**. You can also use ⚙ Chart settings → Notifications → **Find my chat id**.
+  - Copy the `chat_id` number into `TELEGRAM_CHAT_ID=`. Group ids start with `-`.
+- **Step 17.3: Choose what to send** (optional)
+  - `TELEGRAM_EVENTS=alerts,paper,journal`. Remove the ones you don't want.
+  - Each alert also has its own **Send to Telegram** checkbox.
+- **Step 17.4: Test it**
+  - Restart the backend.
+  - Go to ⚙ Chart settings → Notifications → **Send test**. Or click **Test** on any alert in the Alerts tab.
+
+---
+
+## Step 18 (optional): Import your real trades into the journal 📥
+
+- **From MetaTrader 5**
+  - Keep MT5 open and logged in, with the `mt5` provider connected.
+  - Journal tab → **Import** → **From MetaTrader 5** → enter the number of days.
+  - Each position becomes one trade:
+    - entry and exit are the average of the deals
+    - **P&L** is your broker's exact net result in your account currency (profit + commission + swap)
+    - SL/TP come from your order
+  - Open positions are imported as open trades and closed automatically on a later import.
+- **From Upstox**
+  - Needs the **daily login** (Option B in Step 15). The read-only Analytics Token cannot read your trade book.
+  - Journal tab → **Import** → **From Upstox**.
+  - Buys and sells are matched first-in-first-out into round trips. P&L is before Upstox charges.
+- **Automatic import**
+  - Set `JOURNAL_AUTO_IMPORT=mt5` (or `mt5,upstox`) in `.env` and restart.
+  - It runs every `JOURNAL_IMPORT_INTERVAL_S` seconds (default 120).
+- **Safe to repeat:** importing the same trades again only updates them. Your setup, tags, rating, notes and screenshot are kept.
+
+---
+
 ## Daily routine (after the first setup)
 
 1. Open MetaTrader 5 and wait until it connects.
@@ -403,6 +447,19 @@ The **Journal** tab works without Notion: every trade is saved in `backend\data\
 - **A journal entry shows ⚠**
   - Hover the ⚠ to read Notion's message, fix the cause, then click ⚠ (one entry) or **Retry** (all failed entries).
   - Example cause: a journal column was deleted in Notion. Restart the backend and it's added back.
+- **Indicator alert shows "⚠ Server-side Pine needs the 'mini-racer' package"**
+  - Run `pip install -r requirements.txt` in the activated virtual environment, then restart. Price alerts keep working without it.
+- **An indicator alert shows "⚠ …" in the Alerts tab**
+  - That's the script's error on the server, for example an unsupported Pine feature. Fix the script, then **Edit → Save** the alert.
+- **Telegram: "chat not found" / nothing arrives**
+  - Press **Start** in your bot first, then use **Find my chat id** again. The bot can't message you before you have messaged it.
+- **Paper order: "No price available for this symbol right now"**
+  - The provider for that chart isn't connected. Paper trading needs live or recent prices.
+- **Charts show old candles after changing broker / server**
+  - ⚙ Chart settings → Candle cache → **Clear**. They are downloaded again.
+- **MT5 import finds nothing**
+  - Increase the number of days.
+  - In MT5's **History** tab, choose "All history" so the terminal has downloaded it.
 - **You want more detail in the logs**
   - Set `LOG_LEVEL=DEBUG` in `.env` and restart.
 
@@ -410,7 +467,7 @@ The **Journal** tab works without Notion: every trade is saved in `backend\data\
 
 ## What's next
 
-- All five phases are complete. Ideas for later:
+- All five phases and the v1.1 upgrade are complete. Ideas for later:
   - another Indian broker (Kite or Angel One) as a second provider file
   - more Pine features as PineTS adds them
   - order placement (Upstox's order APIs need a whitelisted static IP)

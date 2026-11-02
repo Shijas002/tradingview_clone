@@ -10,3 +10,6 @@ sqlalchemy>=2.0,<3.0
 
 # MetaTrader 5 bridge - Windows + 64-bit Python only (skipped automatically elsewhere)
 MetaTrader5>=5.0.45; sys_platform == "win32"
+
+# v1.1 - server-side Pine Script for indicator alerts (embedded V8)
+mini-racer>=0.12,<1.0

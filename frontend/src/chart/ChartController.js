@@ -609,6 +609,14 @@ export class ChartController {
       if (ev.button !== 0) return;
       const pt = this._localPoint(ev);
       if (!pt) return;
+      const tl = this.drawingManager.tool === "cursor" || !this.drawingManager.tool ? this._tradeLineAt(pt.y) : null;
+      if (tl) {
+        this._tradeDrag = { line: tl, price: tl.def.price };
+        this._owning = true;
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
       if (this.drawingManager.pointerDown(pt.x, pt.y, ev)) {
         this._owning = true;
         ev.preventDefault();
@@ -627,6 +635,19 @@ export class ChartController {
       if (!r) return;
       const x = ev.clientX - r.left;
       const y = ev.clientY - r.top;
+      if (this._tradeDrag) {
+        const price = this.mainSeries.coordinateToPrice(y);
+        if (price !== null) {
+          this._tradeDrag.price = price;
+          this._tradeDrag.line.handle.applyOptions({ price, title: `${this._tradeDrag.line.def.title} ${this._formatPrice(price)}` });
+        }
+        ev.stopPropagation();
+        return;
+      }
+      if (!this._owning && x >= 0 && y >= 0 && y <= r.height) {
+        const want = this._tradeLineAt(y) ? "ns-resize" : "";
+        if (this.container.style.cursor !== want) this.container.style.cursor = want;
+      }
       if (this._owning || this.drawingManager.creating) {
         this.drawingManager.pointerMove(x, y);
         if (this._owning) ev.stopPropagation();
@@ -635,6 +656,15 @@ export class ChartController {
       if (x >= 0 && y >= 0 && y <= r.height) this.drawingManager.pointerMove(x, y);
     };
     this._onPointerUp = (ev) => {
+      if (this._tradeDrag) {
+        const { line, price } = this._tradeDrag;
+        this._tradeDrag = null;
+        this._owning = false;
+        ev.stopPropagation();
+        if (Math.abs(price - line.def.price) > 0 && this.cb.onTradeLineMove) this.cb.onTradeLineMove(line.def, price);
+        else line.handle.applyOptions({ price: line.def.price, title: line.def.title });
+        return;
+      }
       const r = this._mainPaneRect();
       if (!r) return;
       const handled = this.drawingManager.pointerUp(ev.clientX - r.left, ev.clientY - r.top);
@@ -711,6 +741,8 @@ export class ChartController {
     this._refreshMain();
     this._alertLines = [];
     this.setAlertLines(this._alertLevels || []);
+    this._tradeLines = [];
+    this.setTradeLines(this._tradeLineDefs || []);
     for (const rt of this.indicators.values()) if (rt.overlay) rt.rebind();
     this.drawingsPrimitive.requestRedraw();
   }
@@ -776,6 +808,37 @@ export class ChartController {
     this._alertLines = this._alertLevels.map((lv) =>
       this.mainSeries.createPriceLine({ price: lv.price, color: "#FF9800", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "🔔" + (lv.title ? " " + lv.title : "") }),
     );
+  }
+
+  /**
+   * Paper-trading lines (v1.1): position entry, SL / TP and working orders.
+   * Lines with draggable=true can be dragged; on release cb.onTradeLineMove(line, price).
+   */
+  setTradeLines(lines) {
+    for (const l of this._tradeLines || []) {
+      try {
+        this.mainSeries.removePriceLine(l.handle);
+      } catch {
+        /* series replaced */
+      }
+    }
+    this._tradeLineDefs = lines || [];
+    this._tradeLines = this._tradeLineDefs.map((def) => ({
+      def,
+      handle: this.mainSeries.createPriceLine({
+        price: def.price, color: def.color, lineWidth: def.kind === "position" ? 2 : 1, lineStyle: def.dashed ? 2 : def.kind === "position" ? 0 : 1,
+        axisLabelVisible: true, title: def.title || "",
+      }),
+    }));
+  }
+
+  _tradeLineAt(y) {
+    for (const l of this._tradeLines || []) {
+      if (!l.def.draggable) continue;
+      const ly = this.mainSeries.priceToCoordinate(l.def.price);
+      if (ly !== null && Math.abs(ly - y) <= 5) return l;
+    }
+    return null;
   }
 
   setDrawings(list) {

@@ -31,6 +31,7 @@ export const useStore = create(
       providers: [],
       broker: null,
       journal: [],
+      paper: null,
       journalStats: null,
       notion: null,
       connection: "connecting",
@@ -89,6 +90,10 @@ export const useStore = create(
 
       setJournal(patch) {
         set(patch);
+      },
+
+      setPaper(paper) {
+        set({ paper });
       },
 
       setProviders(providers) {

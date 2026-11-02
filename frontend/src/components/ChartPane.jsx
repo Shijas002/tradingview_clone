@@ -7,6 +7,7 @@ import { TF, fmtNumber } from "../utils/market.js";
 import { Icon } from "./Icons.jsx";
 import DrawingStyleBar from "./DrawingStyleBar.jsx";
 import { useChartZone } from "../chart/useChartZone.js";
+import { moveTradeLine, tradeLinesFor } from "../paper/paper.js";
 import { BrokerLoginButton } from "../broker/BrokerLogin.jsx";
 
 const EMPTY = [];
@@ -60,6 +61,10 @@ export default function ChartPane({ pane, active }) {
         if (p && p.provider) store.getState().setDrawings(symbolKey(p.provider, p.symbol), list);
       },
       onDrawingSelect: (d) => store.getState().setSelectedDrawing(d ? { paneId, drawing: d } : null),
+      onTradeLineMove: (line, price) => {
+        const p = store.getState().panes.find((x) => x.id === paneId);
+        moveTradeLine(line, price, p ? p.digits ?? 5 : 5);
+      },
       onToolDone: () => {
         if (!store.getState().settings.stayInDrawingMode) store.getState().setTool("cursor");
       },
@@ -123,6 +128,10 @@ export default function ChartPane({ pane, active }) {
   useEffect(() => ctrlRef.current && ctrlRef.current.setCrosshairMode(crosshair), [crosshair]);
   useEffect(() => ctrlRef.current && ctrlRef.current.setPriceScale(pane.priceScale || {}), [pane.priceScale]);
   const zone = useChartZone(pane.id);
+  const paper = useStore((s) => s.paper);
+  const showTrades = useStore((s) => s.settings.showPaperTrades !== false);
+  const tradeLines = useMemo(() => (showTrades ? tradeLinesFor(pane, paper) : []), [pane.provider, pane.symbol, paper, showTrades]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => ctrlRef.current && ctrlRef.current.setTradeLines(tradeLines), [tradeLines]);
   useEffect(() => ctrlRef.current && ctrlRef.current.setTimezone(zone.tz, zone.shift), [zone.tz, zone.shift, pane.id]);
 
   // active price alerts of this symbol -> dashed lines on the chart
@@ -192,6 +201,9 @@ export default function ChartPane({ pane, active }) {
                 <button title={ind.visible === false ? "Show" : "Hide"} onClick={() => s.updateIndicator(pane.id, ind.id, { visible: ind.visible === false })}>
                   {ind.visible === false ? <Icon.eyeOff /> : <Icon.eye />}
                 </button>
+                <button title="Add alert on this indicator" onClick={() => s.openDialog({ type: "alert", paneId: pane.id, indicatorId: ind.id })}>
+                  <Icon.bell />
+                </button>
                 <button title="Settings" onClick={() => s.openDialog({ type: "indicatorSettings", paneId: pane.id, indicatorId: ind.id })}>
                   <Icon.gear />
                 </button>
@@ -228,9 +240,15 @@ export default function ChartPane({ pane, active }) {
       </div>
       {quote && (
         <div className="pane-quote">
-          <span className="q-bid">{quote.bid ? quote.bid.toFixed(d) : "—"}</span>
+          <button className="q-bid" title="Sell (paper trading)" onClick={() => s.openDialog({ type: "order", paneId: pane.id, side: "sell" })}>
+            {quote.bid ? quote.bid.toFixed(d) : "—"}
+            <small>SELL</small>
+          </button>
           <span className="q-spread">{quote.bid && quote.ask ? Math.round((quote.ask - quote.bid) * 10 ** d) : ""}</span>
-          <span className="q-ask">{quote.ask ? quote.ask.toFixed(d) : "—"}</span>
+          <button className="q-ask" title="Buy (paper trading)" onClick={() => s.openDialog({ type: "order", paneId: pane.id, side: "buy" })}>
+            {quote.ask ? quote.ask.toFixed(d) : "—"}
+            <small>BUY</small>
+          </button>
         </div>
       )}
       {runtime.loading && <div className="pane-overlay">Loading {pane.symbol}…</div>}

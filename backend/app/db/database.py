@@ -12,7 +12,7 @@ import logging
 from contextlib import contextmanager
 from typing import Iterator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -46,7 +46,34 @@ class Database:
         from app.db import models  # noqa: F401
 
         Base.metadata.create_all(self.engine)
+        self._add_missing_columns()
         log.info("Database ready: %s", self.url)
+
+    def _add_missing_columns(self) -> None:
+        """
+        Tiny additive migration: columns added to a model in a later version are
+        added to the existing table (with their default), so older databases keep
+        working without a migration tool. Columns are never removed or changed.
+        """
+        insp = inspect(self.engine)
+        with self.engine.begin() as conn:
+            for table in Base.metadata.sorted_tables:
+                if not insp.has_table(table.name):
+                    continue
+                existing = {c["name"] for c in insp.get_columns(table.name)}
+                for col in table.columns:
+                    if col.name in existing:
+                        continue
+                    ddl = f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col.type.compile(dialect=self.engine.dialect)}'
+                    default = getattr(col.default, "arg", None) if col.default is not None else None
+                    if isinstance(default, bool):
+                        ddl += f" DEFAULT {1 if default else 0}"
+                    elif isinstance(default, (int, float)):
+                        ddl += f" DEFAULT {default}"
+                    elif isinstance(default, str):
+                        ddl += " DEFAULT '" + default.replace("'", "''") + "'"
+                    conn.execute(text(ddl))
+                    log.info("Database upgraded: added column %s.%s", table.name, col.name)
 
     @contextmanager
     def session(self) -> Iterator[Session]:

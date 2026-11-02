@@ -8,7 +8,9 @@ each tick against the active alerts of that symbol and, when one fires:
   1. stores an AlertEvent row,
   2. updates the alert (count, last time; "once" alerts become "triggered"),
   3. broadcasts {"type": "alert"} to every WebSocket client (toast + sound + browser notification),
-  4. optionally POSTs the event as JSON to ALERT_WEBHOOK_URL.
+  4. notifies Telegram and/or ALERT_WEBHOOK_URL through the Notifier.
+
+Indicator / Pine alerts (kind = "indicator") are handled by IndicatorAlertEngine.
 
 Conditions (level = fixed price, or the trend line's price at the tick time):
   crossing, crossing_up, crossing_down, greater_than, less_than,
@@ -23,13 +25,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
-import httpx
+from sqlalchemy import or_
 
 from app.core.exceptions import DataBridgeError
 from app.db.database import Database
 from app.db.models import Alert, AlertEvent, now_ms
 from app.models.market import Tick
 from app.providers.registry import ProviderRegistry
+from app.services.notifier import Notifier
 
 log = logging.getLogger(__name__)
 
@@ -107,6 +110,7 @@ class _LiveAlert:
     expires_at: Optional[int]
     last_triggered_at: Optional[int]
     trigger_count: int
+    notify_telegram: bool = True
     feed: Tuple[str, str] = ("", "")
     prev_level: Optional[float] = None
     fired: bool = False  # "once" alerts: guard against double firing before the DB round-trip
@@ -127,23 +131,20 @@ class _Feed:
 
 
 class AlertEngine:
-    def __init__(self, db: Database, registry: ProviderRegistry, broadcast: Broadcast, webhook_url: str = "") -> None:
+    def __init__(self, db: Database, registry: ProviderRegistry, broadcast: Broadcast, notifier: Optional[Notifier] = None) -> None:
         self.db = db
         self.registry = registry
         self.broadcast = broadcast
-        self.webhook_url = webhook_url.strip()
+        self.notifier = notifier
         self.feeds: Dict[Tuple[str, str], _Feed] = {}
         self._task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
-        self._http: Optional[httpx.AsyncClient] = None
         self._background: Set[asyncio.Task] = set()
 
     # ------------------------------------------------------------ lifecycle
     async def start(self) -> None:
         for provider in self.registry.all():
             provider.add_tick_listener(self._on_tick)
-        if self.webhook_url:
-            self._http = httpx.AsyncClient(timeout=8.0)
         await self.reload()
         self._task = asyncio.create_task(self._maintenance(), name="alert-maintenance")
 
@@ -160,8 +161,6 @@ class AlertEngine:
             for feed in self.feeds.values():
                 await self._release(feed)
             self.feeds.clear()
-        if self._http:
-            await self._http.aclose()
 
     async def _maintenance(self) -> None:
         """Every 10 s: retry feeds whose provider was offline, expire old alerts."""
@@ -209,7 +208,9 @@ class AlertEngine:
     # ----------------------------------------------------------- loading
     def _load_rows(self) -> List[Alert]:
         with self.db.session() as s:
-            return list(s.query(Alert).filter(Alert.active.is_(True)).all())
+            return list(
+                s.query(Alert).filter(Alert.active.is_(True), or_(Alert.kind.is_(None), Alert.kind != "indicator")).all()
+            )
 
     async def reload(self) -> None:
         """Re-read active alerts from the database and adjust feed subscriptions."""
@@ -222,6 +223,7 @@ class AlertEngine:
                     id=r.id, name=r.name, provider=r.provider, symbol=r.symbol, condition=r.condition, price=r.price,
                     price2=r.price2, line=r.line, trigger=r.trigger, message=r.message, expires_at=r.expires_at,
                     last_triggered_at=r.last_triggered_at, trigger_count=r.trigger_count, feed=key,
+                    notify_telegram=r.notify_telegram is not False,
                 )
                 wanted.setdefault(key, []).append(live)
             for key in list(self.feeds):
@@ -327,13 +329,14 @@ class AlertEngine:
                     feed.alerts = [x for x in feed.alerts if x.id != a.id]
                     if not feed.alerts:
                         await self._release(self.feeds.pop(a.feed))
-        if self._http and self.webhook_url:
-            try:
-                r = await self._http.post(self.webhook_url, json=payload)
-                if r.status_code >= 300:
-                    log.warning("Alert webhook returned HTTP %s: %s", r.status_code, r.text[:200])
-            except httpx.HTTPError as exc:
-                log.warning("Alert webhook failed: %s", exc)
+        if self.notifier is not None:
+            self.notifier.notify(
+                "alerts",
+                f"🔔 {a.name or a.symbol}",
+                [text, f"{a.provider}:{a.symbol} · price {price}"],
+                payload,
+                telegram=a.notify_telegram,
+            )
 
     # ----------------------------------------------------------- expiry
     def _expire_rows(self) -> int:
@@ -359,6 +362,6 @@ class AlertEngine:
                 {"provider": f.provider, "symbol": f.symbol, "subscribed": f.acquired, "alerts": len(f.alerts), "last_price": f.last_price}
                 for f in self.feeds.values()
             ],
-            "webhook": bool(self.webhook_url),
+            "notifications": self.notifier.status() if self.notifier else None,
             "checked_at": int(time.time()),
         }

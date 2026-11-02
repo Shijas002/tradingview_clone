@@ -71,6 +71,18 @@ class Alert(Base):
     last_triggered_at: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     trigger_count: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20), default="active")  # active | triggered | expired | paused
+    # --- indicator / Pine alerts (v1.1) ---
+    kind: Mapped[str] = mapped_column(String(12), default="price")  # price | indicator
+    timeframe: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    script_name: Mapped[str] = mapped_column(String(200), default="")
+    script_source: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    script_inputs: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    target: Mapped[Optional[str]] = mapped_column(String(240), nullable=True)  # "plot:RSI" | "plot2:..." | "alertcondition:Title" | "alert"
+    target2: Mapped[Optional[str]] = mapped_column(String(240), nullable=True)  # compare against another plot ("plot:Signal")
+    frequency: Mapped[str] = mapped_column(String(20), default="once_per_bar_close")  # once | once_per_bar | once_per_bar_close
+    last_bar_time: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    notify_telegram: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # e.g. Pine script error
 
 
 class AlertEvent(Base):
@@ -121,3 +133,101 @@ class JournalEntry(Base):
     notion_screenshot_version: Mapped[int] = mapped_column(Integer, default=0)
     notion_image_block_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     notion_url: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    # --- v1.1: imported / paper trades ---
+    source: Mapped[str] = mapped_column(String(12), default="manual")  # manual | paper | mt5 | upstox
+    external_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True, index=True)
+    broker_pnl: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # net P&L reported by the broker (account currency)
+
+
+# ---------------------------------------------------------------------------
+# v1.1 - candle cache
+# ---------------------------------------------------------------------------
+class CandleBar(Base):
+    """Cached OHLCV bar, so charts reopen instantly and providers are asked only for new data."""
+
+    __tablename__ = "candle_cache"
+    provider: Mapped[str] = mapped_column(String(40), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(80), primary_key=True)
+    timeframe: Mapped[str] = mapped_column(String(8), primary_key=True)
+    time: Mapped[int] = mapped_column(Integer, primary_key=True)
+    open: Mapped[float] = mapped_column(Float)
+    high: Mapped[float] = mapped_column(Float)
+    low: Mapped[float] = mapped_column(Float)
+    close: Mapped[float] = mapped_column(Float)
+    volume: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class CandleCoverage(Base):
+    """A time range [start, end] for which every bar of a series is in candle_cache."""
+
+    __tablename__ = "candle_coverage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(40), index=True)
+    symbol: Mapped[str] = mapped_column(String(80), index=True)
+    timeframe: Mapped[str] = mapped_column(String(8))
+    start: Mapped[int] = mapped_column(Integer)
+    end: Mapped[int] = mapped_column(Integer)
+    at_start: Mapped[bool] = mapped_column(Boolean, default=False)  # no older bars exist at the provider
+    updated_at: Mapped[int] = mapped_column(Integer, default=now_ms)
+
+
+# ---------------------------------------------------------------------------
+# v1.1 - paper trading
+# ---------------------------------------------------------------------------
+class PaperAccount(Base):
+    __tablename__ = "paper_accounts"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    currency: Mapped[str] = mapped_column(String(8), default="USD")
+    initial_balance: Mapped[float] = mapped_column(Float, default=100_000.0)
+    balance: Mapped[float] = mapped_column(Float, default=100_000.0)  # cash incl. realized P&L and commissions
+    commission_pct: Mapped[float] = mapped_column(Float, default=0.0)  # % of traded notional per fill
+    created_at: Mapped[int] = mapped_column(Integer, default=now_ms)
+    reset_at: Mapped[int] = mapped_column(Integer, default=now_ms)
+
+
+class PaperOrder(Base):
+    __tablename__ = "paper_orders"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    account_id: Mapped[str] = mapped_column(String(32), index=True)
+    provider: Mapped[str] = mapped_column(String(40))
+    symbol: Mapped[str] = mapped_column(String(80), index=True)
+    side: Mapped[str] = mapped_column(String(4))  # buy | sell
+    type: Mapped[str] = mapped_column(String(8))  # market | limit | stop
+    qty: Mapped[float] = mapped_column(Float)
+    price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # limit / stop price
+    stop_loss: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # attached to the resulting position
+    take_profit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(10), default="working")  # working | filled | cancelled | rejected
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[int] = mapped_column(Integer, default=now_ms)
+    updated_at: Mapped[int] = mapped_column(Integer, default=now_ms)
+    filled_at: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    fill_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    commission: Mapped[float] = mapped_column(Float, default=0.0)
+    realized_pnl: Mapped[float] = mapped_column(Float, default=0.0)  # P&L this fill realized (closing part)
+    note: Mapped[str] = mapped_column(String(40), default="")  # e.g. "stop loss", "take profit", "close"
+
+
+class PaperPosition(Base):
+    """Net position per symbol (like TradingView paper trading). Closed positions are kept as history."""
+
+    __tablename__ = "paper_positions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    account_id: Mapped[str] = mapped_column(String(32), index=True)
+    provider: Mapped[str] = mapped_column(String(40))
+    symbol: Mapped[str] = mapped_column(String(80), index=True)
+    side: Mapped[str] = mapped_column(String(6))  # long | short
+    qty: Mapped[float] = mapped_column(Float)  # current open quantity (0 when closed)
+    max_qty: Mapped[float] = mapped_column(Float, default=0.0)  # largest size held (for the journal)
+    avg_price: Mapped[float] = mapped_column(Float)
+    stop_loss: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(8), default="open")  # open | closed
+    opened_at: Mapped[int] = mapped_column(Integer, default=now_ms)
+    closed_at: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    realized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    commission: Mapped[float] = mapped_column(Float, default=0.0)
+    exit_value: Mapped[float] = mapped_column(Float, default=0.0)  # sum(exit price * qty) -> average exit
+    exit_qty: Mapped[float] = mapped_column(Float, default=0.0)
+    journal_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    timeframe: Mapped[str] = mapped_column(String(8), default="")

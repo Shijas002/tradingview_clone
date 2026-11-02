@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 from app.api import alerts as alerts_api
-from app.api import broker, journal, persistence, rest, websocket
+from app.api import broker, journal, notify, paper, persistence, rest, websocket
 from app.core.config import BASE_DIR, Settings, get_settings
 from app.core.exceptions import DataBridgeError
 from app.core.logging_config import setup_logging
@@ -30,6 +30,12 @@ from app.db.database import Database
 from app.providers.registry import ProviderRegistry
 from app.services.alert_engine import AlertEngine
 from app.services.notion_journal import NotionJournal
+from app.services.history_service import HistoryService
+from app.services.notifier import Notifier
+from app.services.pine_runtime import PineRuntime
+from app.services.indicator_alerts import IndicatorAlertEngine
+from app.services.paper_broker import PaperBroker
+from app.services.journal_import import JournalImporter
 from app.services.stream_manager import StreamManager
 
 log = logging.getLogger("app")
@@ -59,24 +65,55 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         db.create_all()
         registry = ProviderRegistry(settings)
         manager = StreamManager(registry, queue_size=settings.ws_client_queue_size)
-        alert_engine = AlertEngine(db, registry, manager.broadcast, settings.alert_webhook_url)
+        history = HistoryService(db, registry, settings)
+        notifier = Notifier(settings)
+        alert_engine = AlertEngine(db, registry, manager.broadcast, notifier)
+
+        async def fetch_bars(provider_name: str, symbol: str, timeframe, count: int):
+            prov = registry.get(provider_name)
+            try:
+                canonical = prov.normalize_symbol(symbol)
+            except DataBridgeError:
+                if ":" not in symbol:
+                    raise
+                canonical = prov.normalize_symbol(symbol.split(":", 1)[1])
+            return await history.get(prov, canonical, timeframe, count)
+
+        pine_runtime = PineRuntime(fetch_bars)
+        indicator_alerts = IndicatorAlertEngine(db, registry, history, pine_runtime, manager.broadcast, notifier, settings)
         notion = NotionJournal(settings, db, manager.broadcast)
+        paper_broker = PaperBroker(db, registry, manager.broadcast, notifier, settings, notion)
+        journal_import = JournalImporter(db, registry, manager.broadcast, notifier, settings, notion)
         app.state.settings = settings
         app.state.db = db
         app.state.registry = registry
         app.state.stream_manager = manager
+        app.state.history = history
+        app.state.notifier = notifier
+        app.state.pine_runtime = pine_runtime
+        app.state.indicator_alerts = indicator_alerts
         app.state.alert_engine = alert_engine
         app.state.notion = notion
+        app.state.paper = paper_broker
+        app.state.journal_import = journal_import
         await registry.connect_all()
         await alert_engine.start()
+        await indicator_alerts.start()
         await notion.start()
+        await paper_broker.start()
+        await journal_import.start()
         log.info("Ready on http://%s:%s  (docs: /docs, stream: /ws/market)", settings.app_host, settings.app_port)
         try:
             yield
         finally:
             log.info("Shutting down...")
+            await journal_import.stop()
+            await paper_broker.stop()
             await notion.stop()
+            await indicator_alerts.stop()
             await alert_engine.stop()
+            await pine_runtime.close()
+            await notifier.close()
             await manager.close()
             await registry.disconnect_all()
             db.dispose()
@@ -85,7 +122,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         version=rest.APP_VERSION,
-        description="Phase 1 - real-time market data bridge (MT5 + simulator) over REST and WebSockets.",
+        description="TradingView Clone backend: market data (MT5, OANDA, Upstox), persistence, alerts, journal, paper trading.",
         lifespan=lifespan,
     )
 
@@ -112,6 +149,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.include_router(alerts_api.router)
     app.include_router(broker.router)
     app.include_router(journal.router)
+    app.include_router(notify.router)
+    app.include_router(paper.router)
     app.include_router(websocket.router)
 
     @app.get("/", include_in_schema=False)

@@ -392,3 +392,28 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 a.btn { color: var(--text); text-decoration: none; }
 .notion-chip .dot.ok { background: var(--up); }
 .notion-chip .dot.bad { background: var(--down); }
+
+/* v1.1 - paper trading buttons on the chart quote */
+.pane-quote .q-bid, .pane-quote .q-ask { pointer-events: auto; border: 0; cursor: pointer; padding: 2px 8px; font: inherit; font-variant-numeric: tabular-nums; display: inline-flex; flex-direction: column; align-items: center; line-height: 1.15; }
+.pane-quote .q-bid small, .pane-quote .q-ask small { font-size: 9px; letter-spacing: 0.5px; opacity: 0.85; }
+.pane-quote .q-bid:hover { background: rgba(242, 54, 69, 1); }
+.pane-quote .q-ask:hover { background: rgba(41, 98, 255, 1); }
+.alert-error { font-size: 11px; color: var(--down); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* v1.1 - paper panel, order ticket, badges */
+.paper-panel { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.btn.buy-btn, .btn.primary.buy { background: #2962FF; border-color: #2962FF; color: #fff; }
+.btn.sell-btn, .btn.primary.sell { background: #F23645; border-color: #F23645; color: #fff; }
+.order-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; }
+.order-side { border: 1px solid var(--border); border-radius: 4px; background: var(--bg2); padding: 6px; cursor: pointer; color: var(--text); font-weight: 600; display: flex; flex-direction: column; align-items: center; }
+.order-side small { font-weight: 400; font-variant-numeric: tabular-nums; color: var(--muted); }
+.order-side.sell.active { background: rgba(242, 54, 69, 0.85); border-color: #F23645; color: #fff; }
+.order-side.buy.active { background: rgba(41, 98, 255, 0.9); border-color: #2962FF; color: #fff; }
+.order-side.active small { color: #fff; }
+.inline-num { width: 100px; height: 22px; }
+.muted-link { font-weight: 400; }
+.src-badge { margin-left: 6px; padding: 0 4px; border-radius: 3px; font-size: 9px; letter-spacing: 0.3px; background: var(--bg3); color: var(--muted); vertical-align: middle; }
+.src-badge.src-paper { background: rgba(247, 166, 0, 0.18); color: #f7a600; }
+.src-badge.src-mt5 { background: rgba(41, 98, 255, 0.18); color: #7aa2ff; }
+.src-badge.src-upstox { background: rgba(124, 77, 255, 0.2); color: #b39dff; }
+.settings-note { font-size: 11px; color: var(--muted); }

@@ -57,7 +57,10 @@ export default function AlertsPanel() {
               <div className="alert-desc">
                 {a.provider}:{a.symbol} · {describeAlert(a, pane.digits ?? 5)}
               </div>
+              {a.last_error && <div className="alert-error" title={a.last_error}>⚠ {a.last_error}</div>}
               <div className="alert-meta">
+                {a.kind === "indicator" ? "📈 " : ""}
+                {a.notify_telegram !== false ? "" : "🔕 "}
                 {a.trigger_count ? `fired ${a.trigger_count}× · last ${ago(a.last_triggered_at)}` : "never fired"}
                 {a.expires_at ? ` · expires ${new Date(a.expires_at).toLocaleString()}` : ""}
               </div>

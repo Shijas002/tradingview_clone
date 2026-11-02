@@ -1,6 +1,6 @@
 // Right-click menu on a chart.
 import React, { useRef } from "react";
-import { controllers } from "../chart/registry.js";
+import { controllers, lastPrice } from "../chart/registry.js";
 import { symbolKey, useStore } from "../store/useStore.js";
 import { useOutsideClick } from "./ui.jsx";
 import { downloadScreenshot } from "./TopBar.jsx";
@@ -31,6 +31,17 @@ export default function ContextMenu({ extraItems }) {
       {price && <button onClick={run(() => s.openDialog({ type: "alert", paneId: pane.id, price: menu.price }))}>🔔 Add alert at {price}</button>}
       {price && <button onClick={run(() => s.openDialog({ type: "journal", paneId: pane.id, price: Number(price) }))}>📓 Log trade at {price}</button>}
       {price && <button onClick={run(() => navigator.clipboard && navigator.clipboard.writeText(price))}>Copy price {price}</button>}
+      {price && <div className="cm-sep" />}
+      {price && (
+        <button onClick={run(() => s.openDialog({ type: "order", paneId: pane.id, side: "buy", orderType: Number(price) < (lastPrice(pane.id) ?? Infinity) ? "limit" : "stop", price: Number(price) }))}>
+          📄 Buy {Number(price) < (lastPrice(pane.id) ?? Infinity) ? "limit" : "stop"} @ {price}
+        </button>
+      )}
+      {price && (
+        <button onClick={run(() => s.openDialog({ type: "order", paneId: pane.id, side: "sell", orderType: Number(price) > (lastPrice(pane.id) ?? -Infinity) ? "limit" : "stop", price: Number(price) }))}>
+          📄 Sell {Number(price) > (lastPrice(pane.id) ?? -Infinity) ? "limit" : "stop"} @ {price}
+        </button>
+      )}
       <div className="cm-sep" />
       <button className={ps.mode === "log" ? "checked" : ""} onClick={run(() => s.updatePane(pane.id, { priceScale: { ...ps, mode: ps.mode === "log" ? "normal" : "log" } }))}>
         Log scale

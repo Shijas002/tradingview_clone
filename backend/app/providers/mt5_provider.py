@@ -478,6 +478,41 @@ class MT5Provider(MarketDataProvider):
             raise InvalidRequestError(f"Unsupported timeframe {timeframe}")
         return await self._call(self._history_blocking, symbol, mt5_tf, count, to)
 
+    # ============================================ account history (journal)
+    def _account_trades_blocking(self, date_from_s: int, date_to_s: int) -> Dict[str, Any]:
+        """Deals, open positions, SL/TP of the opening orders and contract sizes (journal import)."""
+        date_from = datetime.fromtimestamp(date_from_s, tz=timezone.utc)
+        date_to = datetime.fromtimestamp(date_to_s, tz=timezone.utc)
+        deals = mt5.history_deals_get(date_from, date_to)
+        if deals is None:
+            raise ProviderUnavailableError(f"MT5 history_deals_get failed: {self._last_error()}")
+        out_deals = [d._asdict() for d in deals]
+        out_positions = [p._asdict() for p in (mt5.positions_get() or [])]
+        sltp: Dict[int, Tuple[Optional[float], Optional[float]]] = {}
+        ids = {int(d["position_id"]) for d in out_deals if d.get("position_id")}
+        for pid in ids:
+            for o in mt5.history_orders_get(position=pid) or []:
+                od = o._asdict()
+                if od.get("sl") or od.get("tp"):
+                    sltp[pid] = (od.get("sl") or None, od.get("tp") or None)
+                    break
+        contract: Dict[str, float] = {}
+        for sym in {d["symbol"] for d in out_deals if d.get("symbol")} | {p["symbol"] for p in out_positions}:
+            info = mt5.symbol_info(sym)
+            contract[sym] = float(info.trade_contract_size) if info is not None and info.trade_contract_size else 1.0
+        account = mt5.account_info()
+        return {
+            "deals": out_deals,
+            "positions": out_positions,
+            "sltp": sltp,
+            "contract": contract,
+            "currency": account.currency if account is not None else "",
+        }
+
+    async def get_account_trades(self, date_from_s: int, date_to_s: int) -> Dict[str, Any]:
+        self._require_ready()
+        return await self._call(self._account_trades_blocking, date_from_s, date_to_s)
+
     # ====================================================== subscriptions
     async def subscribe(self, symbol: str) -> None:
         self._require_ready()

@@ -1,11 +1,27 @@
 // Trade journal (bottom panel tab, Phase 5): stats, filters, trade list, Notion sync status.
 import React, { useEffect, useMemo, useState } from "react";
-import { deleteJournal, retryNotion, syncJournal } from "../api/client.js";
+import { deleteJournal, importJournal, retryNotion, syncJournal } from "../api/client.js";
 import { lastPrice } from "../chart/registry.js";
 import { fmtMoney, formatEntryTime, loadJournal } from "../journal/journal.js";
 import { useStore } from "../store/useStore.js";
 import { TF } from "../utils/market.js";
 import { Icon } from "./Icons.jsx";
+import { Dropdown, MenuItem } from "./ui.jsx";
+
+async function runImport(source) {
+  const s = useStore.getState();
+  const v = window.prompt(`Import your ${source === "mt5" ? "MT5" : "Upstox"} trades from the last how many days?`, "30");
+  if (v === null) return;
+  const days = Math.max(1, Math.min(365, Number(v) || 30));
+  s.toast(`Importing ${source.toUpperCase()} trades…`, "ok", 2000);
+  try {
+    const r = await importJournal(source, days);
+    s.toast(`${source.toUpperCase()}: ${r.created} new, ${r.updated} updated, ${r.unchanged} unchanged`, "ok", 5000);
+    loadJournal();
+  } catch (err) {
+    s.toast(`Import failed: ${err.message}`, "error", 8000);
+  }
+}
 
 function NotionChip({ notion }) {
   const s = useStore.getState();
@@ -168,6 +184,14 @@ export default function JournalPanel() {
         </label>
         <input className="journal-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search symbol, setup, tag, note…" />
         <span className="flex1" />
+        <Dropdown label="Import" title="Import your real trades" buttonClass="btn small" align="right">
+          <MenuItem onClick={() => runImport("mt5")} hint="deals → trades">
+            From MetaTrader 5
+          </MenuItem>
+          <MenuItem onClick={() => runImport("upstox")} hint="trade book">
+            From Upstox
+          </MenuItem>
+        </Dropdown>
         <a className="btn small" href="/api/journal/export.csv" title="Download all trades as CSV (Excel)">
           CSV
         </a>
@@ -202,6 +226,11 @@ export default function JournalPanel() {
                     {e.symbol}
                   </button>
                   {e.timeframe && <span className="muted"> {TF[e.timeframe] ? TF[e.timeframe].l : e.timeframe}</span>}
+                  {e.source && e.source !== "manual" && (
+                    <span className={`src-badge src-${e.source}`} title={e.source === "paper" ? "Paper trade" : `Imported from ${e.source.toUpperCase()}`}>
+                      {e.source === "paper" ? "PAPER" : e.source.toUpperCase()}
+                    </span>
+                  )}
                 </td>
                 <td className={e.side === "long" ? "up" : "down"}>{e.side === "long" ? "Long" : "Short"}</td>
                 <td>{e.entry_price}</td>

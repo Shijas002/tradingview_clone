@@ -126,12 +126,15 @@ def _iso(ts: Optional[int]) -> Optional[Dict[str, Any]]:
 
 
 def trade_metrics(e: JournalEntry) -> Tuple[Optional[float], Optional[float]]:
-    """(P&L, R multiple) of a closed trade; (None, None) while it is open."""
+    """(P&L, R multiple) of a closed trade; (None, None) while it is open. Uses broker_pnl when present."""
     if e.status != "closed" or e.exit_price is None:
         return None, None
     direction = 1.0 if e.side == "long" else -1.0
     move = (e.exit_price - e.entry_price) * direction
     pnl = move * (e.quantity or 0.0) - (e.fees or 0.0)
+    broker_pnl = getattr(e, "broker_pnl", None)
+    if broker_pnl is not None:  # imported / paper trades: the broker's exact net P&L (account currency)
+        pnl = broker_pnl
     r = None
     if e.stop_loss is not None and abs(e.entry_price - e.stop_loss) > 0:
         r = move / abs(e.entry_price - e.stop_loss)

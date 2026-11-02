@@ -147,6 +147,7 @@ This document explains **how data moves** through the backend and **what every f
   - `alerts_changed`: alerts were created, edited, triggered or expired (Phase 3)
   - `journal_changed`: a journal entry was added, edited, synced or deleted (Phase 5)
   - `journal_status`: the Notion connection state changed (Phase 5)
+  - `paper_changed`: a paper order/position changed (v1.1); `paper_pnl`: live open P&L of paper positions, every second (v1.1)
   - `subscribed`: `provider`, `symbol`, `timeframe`, `candle` (the current forming bar)
   - `unsubscribed`: `provider`, `symbol`, `timeframe`
   - `tick`: `data{provider, symbol, time_ms, bid, ask, last, volume, price}`
@@ -289,6 +290,8 @@ This document explains **how data moves** through the backend and **what every f
 - **`test_failover.py`**: a fake OANDA API plus a stub MT5. Covers symbol mapping, time shift, streaming, failover and switch-back, and a full app run.
 - **`test_persistence_alerts.py`**: workspace, drawings, scripts, backup, and the alert engine (Phase 3).
 - **`test_journal.py`**: journal CRUD, P&L/R, stats, CSV, screenshots and backup, plus a fake Notion API covering setup, missing columns, create/update/screenshot/trash, validation errors and retry, database auto-creation, and bad token/unshared database (Phase 5).
+- **`test_cache_migration.py`** (v1.1): the candle cache (latest/older/start-of-history, pruning, simulator bypass) and the additive column migration.
+- **`test_v11_features.py`** (v1.1): paper broker (fills, limits, SL/TP, netting/flip, journal), paper API, indicator alerts with the real embedded PineTS, Pine check API, Telegram notifier, MT5/Upstox import mapping and the import endpoint.
 - **`test_upstox.py`**: a fake Upstox API, instrument CDN and WebSocket, plus protobuf fixtures made with Upstox's official schema. Covers decoding, session alignment, instruments and search, chunked history, live ticks with real volume, the OAuth flow, and the broker endpoints (Phase 4).
 
 ---
@@ -549,7 +552,113 @@ loop:  rows with notion_status pending/deleting, oldest first, ~3 requests/s
 
 ---
 
-## 14. How future phases plug in
+## 14. v1.1 upgrade: cache, paper trading, Pine alerts, Telegram, journal import
+
+### Candle cache (`services/history_service.py`)
+
+```
+GET /api/history ─► HistoryService.get(provider, symbol, tf, count, to)
+   latest:  newest cached range ends at E → ask the provider only for the bars since E (+2)
+            overlap → merge into the cache → answer the last `count` bars from SQLite
+            (if the covered range is too short, fetch only the missing older part)
+   older:   range [.., to) covered → SQLite only;  partly covered → fetch just the gap
+   fewer bars than asked → "start of history" (trusted 24 h, no further requests)
+tables: candle_cache (provider, symbol, timeframe, time → OHLCV)
+        candle_coverage (ranges known to be complete; merged when they touch)
+```
+
+- **What's cached:** mt5, oanda and upstox, plus auto per active source and time shift (`auto:mt5:0`, `auto:oanda:2`). The simulator isn't cached.
+- **Size:** at most `CANDLE_CACHE_MAX_BARS` per series; the oldest bars are dropped first.
+
+### Indicator / Pine alerts (`services/pine_runtime.py`, `services/indicator_alerts.py`)
+
+```
+AlertDialog (Condition on: <indicator>) ─► POST /api/alerts/pine/check  → plots + values, alertcondition titles
+                                         ─► POST /api/alerts {kind:"indicator", script_source, inputs, timeframe,
+                                                              target: plot:X | alertcondition:T | alert, target2, frequency}
+IndicatorAlertEngine
+  per (provider, symbol, timeframe): last PINE_ALERT_BARS candles (HistoryService) + live ticks → CandleAggregator
+  bar closes            → run "once per bar close" alerts on the closed bars
+  every PINE_ALERT_INTERVAL_S while ticking → run "once per bar" / "only once" alerts on the forming bar
+  PineRuntime: mini-racer V8 ← pinets.min.browser.js + harness.js  (__pineRun → plots' last values + alerts on the last bar)
+               request.security → PYFETCH → HistoryService (cached)
+  check_target(): plot vs value / plot (crossing, greater…), alertcondition fired, alert() fired
+  fire → AlertEvent + Alert(trigger_count, last_bar_time) → WS "alert" → Notifier (Telegram / webhook)
+```
+
+- Script errors are saved on the alert (`last_error`) and shown in the Alerts tab.
+- The price-alert `AlertEngine` skips `kind="indicator"` alerts.
+
+### Paper trading (`services/paper_broker.py`, `api/paper.py`)
+
+```
+OrderDialog / BUY-SELL boxes / context menu / 📄 drawing ─► POST /api/paper/orders
+PaperBroker
+  market → fills now at ask/bid (last tick; no tick → latest candle close)
+  limit/stop → working; every tick: buy-limit ask<=P, sell-limit bid>=P, buy-stop ask>=P, sell-stop bid<=P
+  positions (netting): add / reduce / close / reverse; SL/TP checked on every tick
+  fill → PaperOrder(filled) + PaperPosition + PaperAccount.balance (+realized −commission)
+       → JournalEntry (source "paper": opened on open, closed with broker_pnl on close)
+       → WS paper_changed (+ journal_changed) → Notifier "paper"
+  every second while positions are open → WS paper_pnl (equity, open P&L, last prices)
+ChartController.setTradeLines(): entry / SL / TP / order price lines; drag → PUT order / position
+```
+
+### Journal import (`services/journal_import.py`)
+
+```
+POST /api/journal/import {source, days}   or   JOURNAL_AUTO_IMPORT every JOURNAL_IMPORT_INTERVAL_S
+  mt5:    MT5Provider.get_account_trades() → history_deals_get + positions_get + history_orders_get (SL/TP)
+          mt5_round_trips(): group deals by position id, IN→entry, OUT→exit, net = profit+commission+swap+fee,
+                             qty = lots × contract size, server time − offset → UTC
+  upstox: get-trades-for-day + charges/historical-trades → upstox_round_trips(): FIFO per instrument
+  upsert by external_id (never overwrites setup / tags / notes / rating / screenshot) → Notion sync → WS journal_changed
+```
+
+### Notifications (`services/notifier.py`, `api/notify.py`)
+
+- **Telegram:** `sendMessage` with HTML formatting; a 429 response is retried after `retry_after`.
+- **Webhook:** `ALERT_WEBHOOK_URL` receives the JSON payload of every alert.
+- **Events:** `TELEGRAM_EVENTS` selects which of alerts, paper and journal are sent; each alert also has `notify_telegram`.
+- **Chat id helper:** `GET /api/notify/telegram/chats` reads `getUpdates` to list the chats that messaged the bot.
+
+### Database upgrades
+
+- `Database._add_missing_columns()` adds new model columns to existing tables with their defaults (`ALTER TABLE … ADD COLUMN`).
+- New tables are created as usual, so a Phase 3–5 database upgrades by itself.
+
+### Files (v1.1)
+
+- **Backend, new:**
+  - `services/history_service.py`, `pine_runtime.py`, `indicator_alerts.py`, `paper_broker.py`, `journal_import.py`, `notifier.py`
+  - `api/paper.py`, `api/notify.py`
+  - `pine/pinets.min.browser.js`, `pine/harness.js`, `pine/PINETS_LICENSE.txt`
+- **Backend, changed:**
+  - `db/models.py`: new tables, plus new Alert and Journal columns
+  - `db/database.py`: the column migration
+  - `services/alert_engine.py`: uses the Notifier
+  - `api/alerts.py`: indicator alerts and Pine check
+  - `api/journal.py`: import endpoints and source fields
+  - `api/rest.py`: history goes through the cache; cache endpoints
+  - `providers/mt5_provider.py` and `upstox_provider.py`: account trade history
+  - `notion_journal.py`: uses `broker_pnl`
+  - `core/config.py`: new settings
+- **Frontend, new:**
+  - `paper/paper.js`
+  - `components/PaperPanel.jsx`, `components/dialogs/OrderDialog.jsx`
+- **Frontend, changed:**
+  - `AlertDialog.jsx`: indicator source, targets and frequency
+  - `ChartController.js`: draggable trade lines
+  - `ChartPane.jsx`: BUY/SELL boxes, legend 🔔, trade lines
+  - `ContextMenu.jsx` and `DrawingStyleBar.jsx`: paper order entries
+  - `JournalPanel.jsx`: import menu and source badges
+  - `ChartSettings.jsx`: notifications, cache and paper options
+  - `AlertsPanel.jsx`, `alerts/alerts.js`
+  - `App.jsx`: Alt+B / Alt+S, paper stream events
+
+---
+
+## 15. How future phases plug in
 
 - **Another Indian broker (Kite, Angel One):** add `app/providers/<broker>_provider.py` implementing `MarketDataProvider` (use `upstox_provider.py` as the template), add its name to `SUPPORTED_PROVIDERS` and one line in `registry.py`.
 - **More journal fields:** add a column to `JournalEntry`, the field to `JournalBase` in `api/journal.py`, and an entry in `SCHEMA` + `_properties()` in `notion_journal.py`. The Notion column is created automatically on the next start.

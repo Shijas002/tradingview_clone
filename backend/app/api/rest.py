@@ -8,6 +8,8 @@ GET  /api/timeframes                    - supported timeframes
 GET  /api/symbols                       - list / search symbols
 GET  /api/history                       - historical candles (initial load + lazy load)
 GET  /api/stream/stats                  - live subscription statistics
+GET  /api/cache                         - candle cache statistics
+DELETE /api/cache?provider=&symbol=     - clear cached candles
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from app.services.stream_manager import StreamManager
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["market-data"])
 
-APP_VERSION = "0.4.0-phase4-upstox"
+APP_VERSION = "1.1.0"
 
 
 def _registry(request: Request) -> ProviderRegistry:
@@ -114,10 +116,35 @@ async def history(
         if ":" not in symbol:
             raise
         sym = prov.normalize_symbol(symbol.split(":", 1)[1])
-    candles = await prov.get_history(sym, timeframe, bars, to=to_dt)
+    service = getattr(request.app.state, "history", None)
+    if service is not None:
+        candles = await service.get(prov, sym, timeframe, bars, to=to_dt)
+    else:
+        candles = await prov.get_history(sym, timeframe, bars, to=to_dt)
     return HistoryResponse(
         provider=prov.name, symbol=sym, timeframe=timeframe, count=len(candles), candles=candles
     )
+
+
+@router.get("/cache")
+async def cache_stats(request: Request) -> Dict[str, Any]:
+    """Candle cache contents and hit statistics."""
+    import asyncio
+
+    return await asyncio.to_thread(request.app.state.history.stats)
+
+
+@router.delete("/cache")
+async def cache_clear(
+    request: Request,
+    provider: Optional[str] = Query(default=None, max_length=40),
+    symbol: Optional[str] = Query(default=None, max_length=80),
+) -> Dict[str, Any]:
+    """Delete cached candles (all, one provider, or one symbol). They are downloaded again on demand."""
+    import asyncio
+
+    removed = await asyncio.to_thread(request.app.state.history.clear, provider, symbol)
+    return {"removed_bars": removed}
 
 
 @router.get("/stream/stats")

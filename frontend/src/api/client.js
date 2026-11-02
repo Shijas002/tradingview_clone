@@ -88,3 +88,23 @@ export const deleteJournal = (id) => api(`/api/journal/${encodeURIComponent(id)}
 export const syncJournal = (id) => api(`/api/journal/${encodeURIComponent(id)}/sync`, { method: "POST" });
 export const getNotionStatus = () => api("/api/journal/notion");
 export const retryNotion = () => api("/api/journal/notion/retry", { method: "POST" });
+
+// ------------------------------------------------------------ v1.1
+export const pineCheck = (body) => api("/api/alerts/pine/check", { method: "POST", body, timeout: 60000 });
+export const getNotifyStatus = () => api("/api/notify");
+export const testTelegram = (text) => api("/api/notify/test", { method: "POST", body: text ? { text } : {} });
+export const getTelegramChats = () => api("/api/notify/telegram/chats");
+export const getImportStatus = () => api("/api/journal/import");
+export const importJournal = (source, days) => api("/api/journal/import", { method: "POST", body: { source, days }, timeout: 120000 });
+export const getCacheStats = () => api("/api/cache");
+export const clearCache = () => api("/api/cache", { method: "DELETE" });
+// paper trading
+export const getPaperAccount = () => api("/api/paper/account");
+export const getPaperHistory = (limit = 200) => api(`/api/paper/history?limit=${limit}`);
+export const placePaperOrder = (body) => api("/api/paper/orders", { method: "POST", body });
+export const modifyPaperOrder = (id, body) => api(`/api/paper/orders/${encodeURIComponent(id)}`, { method: "PUT", body });
+export const cancelPaperOrder = (id) => api(`/api/paper/orders/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const modifyPaperPosition = (id, body) => api(`/api/paper/positions/${encodeURIComponent(id)}`, { method: "PUT", body });
+export const closePaperPosition = (id, qty = null) => api(`/api/paper/positions/${encodeURIComponent(id)}/close`, { method: "POST", body: qty ? { qty } : {} });
+export const closeAllPaper = () => api("/api/paper/close-all", { method: "POST" });
+export const resetPaper = (body) => api("/api/paper/reset", { method: "POST", body });

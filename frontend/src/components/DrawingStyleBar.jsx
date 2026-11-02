@@ -107,6 +107,11 @@ export default function DrawingStyleBar({ paneId, drawing }) {
           📓
         </button>
       )}
+      {(live.type === "long" || live.type === "short") && (
+        <button onClick={() => useStore.getState().openDialog({ type: "order", paneId, drawing: live })} title="Place this position as a paper order (entry, SL, TP)">
+          📄
+        </button>
+      )}
       {ALERTABLE.has(live.type) && (
         <button onClick={() => useStore.getState().openDialog({ type: "alert", paneId, drawing: live })} title="Create alert on this drawing">
           <Icon.bell />

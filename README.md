@@ -2,7 +2,7 @@
 
 A fully local TradingView-style charting platform built with FastAPI and React. It streams live Forex data from MetaTrader 5 (with OANDA fallback) and live Indian market data (NSE, BSE, MCX) from Upstox, saves chart state to SQLite, and journals trades to Notion.
 
-> **Current status: all 5 phases are complete.** The backend streams live data from MT5, with automatic OANDA fallback, and Indian stocks, indices and futures from Upstox. The React chart app at **http://127.0.0.1:8000** has indicators, drawing tools, a Pine Script editor, a strategy tester, bar replay, multi-chart layouts and a watchlist. Everything is saved in SQLite, server-side price alerts keep running even with the browser closed, and a trade journal (with chart screenshots) syncs to Notion.
+> **Current status: all 5 phases + the v1.1 upgrade are complete** (paper trading, real-trade journal import, indicator/Pine alerts with Telegram, candle cache). The backend streams live data from MT5, with automatic OANDA fallback, and Indian stocks, indices and futures from Upstox. The React chart app at **http://127.0.0.1:8000** has indicators, drawing tools, a Pine Script editor, a strategy tester, bar replay, multi-chart layouts and a watchlist. Everything is saved in SQLite, server-side price alerts keep running even with the browser closed, and a trade journal (with chart screenshots) syncs to Notion.
 
 ---
 
@@ -68,6 +68,24 @@ A fully local TradingView-style charting platform built with FastAPI and React. 
     - Screenshots are uploaded through Notion's File Upload API.
     - Edits update the Notion page, and deleting an entry moves its page to the Notion trash.
     - Rate limits are respected, failed syncs retry, and errors are shown per entry.
+- **v1.1 upgrade** ✅
+  - **Paper trading:** a simulated broker on live prices.
+    - Order types: market, limit and stop, each with optional SL/TP.
+    - Netting positions with partial closes and reversals, and an optional commission.
+    - Trade from the chart: click the BUY/SELL price boxes, press Alt+B / Alt+S, right-click → Buy/Sell limit/stop, or use 📄 on a Long/Short position drawing.
+    - Positions, SL/TP and working orders appear as lines on the chart; drag them to change the price.
+    - Every paper position is written to the journal automatically, with its exact P&L.
+  - **Journal import of real trades:**
+    - **MT5:** deals are grouped into positions. Broker net P&L, SL/TP and open positions come across too.
+    - **Upstox:** the trade book is matched first-in-first-out into round trips.
+    - Run it manually or set it to repeat automatically. Re-imports update entries instead of duplicating them, and your notes and tags are never overwritten.
+  - **Indicator & Pine alerts:**
+    - Alert on any plot (crossing, greater than…, or against another plot), on `alertcondition()`, or on `alert()`.
+    - They run on the server with the same PineTS engine inside an embedded V8 (`mini-racer`), so they fire with the browser closed.
+    - Frequency options: once per bar close, once per bar, or only once.
+  - **Telegram notifications:** alerts, paper fills and imported trades, plus a "find my chat id" helper.
+  - **Candle cache:** downloaded candles are kept in SQLite, so charts reopen instantly and providers are only asked for new bars. Scroll-back is served from the cache.
+  - **Database upgrades are automatic:** new columns are added to your existing database on start.
 
 ---
 
@@ -130,6 +148,13 @@ python run.py
   - `NOTION_DATABASE_ID`: your journal database's ID or URL. Share the database with the integration first.
   - Or `NOTION_PARENT_PAGE_ID`: a page shared with the integration. The "Trading Journal" database is created there.
 
+- **v1.1 options** (all optional; defaults work)
+  - **Telegram:** `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (TUTORIAL.md, Step 17). `TELEGRAM_EVENTS` chooses what is sent.
+  - **Paper trading:** `PAPER_INITIAL_BALANCE`, `PAPER_CURRENCY`, `PAPER_COMMISSION_PCT`, `PAPER_AUTO_JOURNAL`.
+  - **Journal import:** `JOURNAL_AUTO_IMPORT=mt5,upstox` for automatic import, and `JOURNAL_IMPORT_INTERVAL_S` (TUTORIAL.md, Step 18).
+  - **Pine alerts:** `PINE_ALERT_BARS`, `PINE_ALERT_INTERVAL_S`.
+  - **Candle cache:** `CANDLE_CACHE_ENABLED`, `CANDLE_CACHE_MAX_BARS`.
+
 ---
 
 ## Project layout
@@ -158,9 +183,11 @@ tradingview-clone/
     │   ├── core/           (config, logging, exceptions)
     │   ├── models/         (data shapes)
     │   ├── providers/      (MT5, OANDA, Upstox, auto failover, simulator, registry)
-    │   ├── services/       (candle aggregator, stream manager, alert engine, Notion journal sync)
+    │   ├── services/       (candle aggregator, stream manager, alerts, indicator alerts, Pine runtime,
+    │   │                    paper broker, candle cache, journal import, Notion sync, notifier)
+    │   ├── pine/           (PineTS bundle + harness for server-side Pine)
     │   ├── db/             (SQLite models + session)
-    │   └── api/            (REST, persistence, alerts, broker login, journal, WebSocket)
+    │   └── api/            (REST, persistence, alerts, broker login, journal, paper, notify, WebSocket)
     ├── scripts/            (check_mt5.py, check_oanda.py, check_upstox.py, check_notion.py, ws_test_client.py)
     └── tests/
 ```
@@ -185,10 +212,10 @@ tradingview-clone/
 ## Third-party components & licenses
 
 - **TradingView Lightweight Charts™** (Apache-2.0): the chart rendering library. Keep the small "TV" attribution logo visible.
-- **PineTS** by LuxAlgo (AGPL-3.0, commercial licence available): runs Pine Script in the browser.
+- **PineTS** by LuxAlgo (AGPL-3.0, commercial licence available): runs Pine Script in the browser, and (v1.1) on the backend for alerts (`backend/app/pine/`, license in `PINETS_LICENSE.txt`).
   - Running this project privately on your own PC is fine.
   - If you ever distribute it or offer it to other people over a network, AGPL requires sharing your source code.
-- **CodeMirror 6** (MIT), **React** (MIT), **zustand** (MIT).
+- **CodeMirror 6** (MIT), **React** (MIT), **zustand** (MIT), **mini-racer** (ISC, embeds Google V8 for server-side Pine).
 - "TradingView" and "Pine Script" are trademarks of TradingView, Inc. This project is not affiliated with TradingView.
 
 ---
@@ -228,6 +255,16 @@ tradingview-clone/
   - `GET /api/journal/stats`, `GET /api/journal/export.csv`
   - `GET /api/journal/notion`: Notion sync status
   - `POST /api/journal/notion/retry`, `POST /api/journal/{id}/sync`
+- **v1.1**
+  - **Paper trading:**
+    - `GET /api/paper/account`, `GET /api/paper/history`
+    - `POST /api/paper/orders`, `PUT/DELETE /api/paper/orders/{id}`
+    - `PUT /api/paper/positions/{id}`, `POST /api/paper/positions/{id}/close`
+    - `POST /api/paper/close-all`, `POST /api/paper/reset`
+  - **Journal import:** `GET/POST /api/journal/import` with `{"source": "mt5"|"upstox", "days": 30}`.
+  - **Pine alerts:** `POST /api/alerts/pine/check` runs a script once and lists its plots and alertconditions. Indicator alerts are created with `POST /api/alerts` and `"kind": "indicator"`.
+  - **Notifications:** `GET /api/notify`, `POST /api/notify/test`, `GET /api/notify/telegram/chats`.
+  - **Candle cache:** `GET /api/cache`, `DELETE /api/cache?provider=&symbol=`.
 - **WebSocket**: `ws://127.0.0.1:8000/ws/market`
   - Send `{"action":"subscribe","provider":"mt5","symbol":"EURUSD","timeframe":"M1"}`
-  - Receive `tick`, `candle`, `status`, `alert`, `alerts_changed`, `journal_changed`, `journal_status`, and `error` messages (full protocol in FLOW.md)
+  - Receive `tick`, `candle`, `status`, `alert`, `alerts_changed`, `journal_changed`, `journal_status`, `paper_changed`, `paper_pnl`, and `error` messages (full protocol in FLOW.md)

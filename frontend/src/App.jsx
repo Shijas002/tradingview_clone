@@ -21,6 +21,8 @@ import IndicatorSettings from "./components/dialogs/IndicatorSettings.jsx";
 import ChartSettings from "./components/dialogs/ChartSettings.jsx";
 import TextDialog from "./components/dialogs/TextDialog.jsx";
 import JournalDialog from "./components/dialogs/JournalDialog.jsx";
+import OrderDialog from "./components/dialogs/OrderDialog.jsx";
+import { applyPaperPnl, loadPaper, loadPaperSoon } from "./paper/paper.js";
 import { loadJournal, loadJournalSoon } from "./journal/journal.js";
 
 function pickDefaultProvider(providers) {
@@ -48,6 +50,8 @@ function useBootstrap() {
     const offAlertsChanged = stream.on("alerts_changed", () => loadAlerts());
     const offJournal = stream.on("journal_changed", () => loadJournalSoon());
     const offJournalStatus = stream.on("journal_status", (data) => useStore.getState().setJournal({ notion: data }));
+    const offPaper = stream.on("paper_changed", () => loadPaperSoon());
+    const offPaperPnl = stream.on("paper_pnl", (data) => applyPaperPnl(data));
     stream.connect();
 
     let cancelled = false;
@@ -81,8 +85,11 @@ function useBootstrap() {
     loadAlerts();
     loadBroker();
     loadJournal();
+    loadPaper();
     return () => {
       cancelled = true;
+      offPaper();
+      offPaperPnl();
       offJournal();
       offJournalStatus();
       offAlert();
@@ -138,6 +145,11 @@ function useShortcuts() {
         s.openDialog({ type: "alert", paneId: pane.id, price: lastPrice(pane.id) });
         return;
       }
+      if (e.altKey && (key.toLowerCase() === "b" || key.toLowerCase() === "s")) {
+        e.preventDefault();
+        s.openDialog({ type: "order", paneId: s.activePane().id, side: key.toLowerCase() === "b" ? "buy" : "sell" });
+        return;
+      }
       if (e.altKey && key.toLowerCase() === "j") {
         e.preventDefault();
         s.openDialog({ type: "journal", paneId: s.activePane().id });
@@ -181,6 +193,8 @@ function Dialogs({ extra }) {
       return <TextDialog dialog={dialog} />;
     case "alert":
       return <AlertDialog key={dialog.alert ? dialog.alert.id : "new"} dialog={dialog} />;
+    case "order":
+      return <OrderDialog dialog={dialog} />;
     case "journal":
       return <JournalDialog key={dialog.entry ? dialog.entry.id : "new"} dialog={dialog} />;
     default:

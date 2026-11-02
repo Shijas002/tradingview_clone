@@ -12,7 +12,7 @@ Open **http://127.0.0.1:8000** while the backend is running (it redirects to the
 - **Left toolbar:** drawing tools, magnet, stay-in-drawing-mode, lock, hide, remove all, reset view.
 - **Chart area:** 1, 2, 3 or 4 charts. Click a chart to make it *active*; the top bar always controls the active chart.
 - **Right panel:** watchlist with live prices.
-- **Bottom panel:** **Pine Editor**, **Strategy Tester** and **Journal**.
+- **Bottom panel:** **Pine Editor**, **Strategy Tester**, **Paper Trading** and **Journal**.
 - **Status bar:** live connection, provider health (including `auto → mt5/oanda`, and **Log in to Upstox** when needed), save state, and a clock in the chart's time zone.
 
 ---
@@ -159,6 +159,19 @@ Open **http://127.0.0.1:8000** while the backend is running (it redirects to the
   - Click **Alert** in the top bar (or press **Alt+A**).
   - Right-click the chart and choose **🔔 Add alert at <price>**.
   - Select a drawing and click **🔔** in its style bar. This works on a trend line, ray, extended line, horizontal line/ray, rectangle or price range.
+- **Alerts on indicators and Pine scripts (v1.1):**
+  - Click **🔔** next to an indicator in the legend. You can also open the alert dialog and choose the indicator under **Condition on**.
+  - **Alert when:**
+    - any **plot**, compared with a value or with another plot (e.g. *RSI crossing up 70*, *MACD crossing Signal*)
+    - one of the script's **alertcondition()** calls
+    - any **alert()** call
+  - **Frequency:**
+    - **Once per bar close** (default): checked when each bar closes, so no false signals
+    - **Once per bar**: checked on the forming bar
+    - **Only once**
+  - The script runs **on the backend** with the same Pine engine as the chart, so these alerts also fire with the browser closed.
+  - Placeholders: `{{ticker}} {{interval}} {{close}} {{value}} {{level}}`.
+  - If the script fails on the server, the alert shows **⚠ and the error** in the Alerts tab.
 - **Conditions:** Crossing, Crossing up, Crossing down, Greater than, Less than, Entering channel, Exiting channel.
   - Rectangles become a channel between their top and bottom.
   - Trend lines follow the line's slope, extended or not.
@@ -169,13 +182,40 @@ Open **http://127.0.0.1:8000** while the backend is running (it redirects to the
   - A desktop notification appears if the tab is in the background (allow notifications when the browser asks).
   - It's recorded in the **Alerts → Log** tab.
   - It's optionally POSTed to `ALERT_WEBHOOK_URL` (see `.env`).
+  - It's sent to **Telegram** if you set that up (TUTORIAL.md, Step 17). Untick **Send to Telegram** on an alert to keep it in the app only.
 - **Alerts run inside the backend**, so they keep working with the browser closed, as long as `python run.py` is running.
 - **On the chart:** active alerts show as dashed orange 🔔 lines.
 - **Manage alerts** in the right panel's **Alerts** tab: Pause / Resume / Restart, Edit, **Test** (sends a test notification), Delete.
 
 ---
 
-## 11. Trade journal
+## 11. Paper trading
+
+- **Place an order**
+  - Click the red **SELL** / blue **BUY** price box at the top right of a chart. Or press **Alt+S** / **Alt+B**, or use **Sell / Buy** in the Paper Trading tab.
+  - **Market** fills immediately: buys at the ask, sells at the bid.
+  - **Limit** / **Stop** orders wait for the price.
+  - Optional **Stop loss** and **Take profit**. The ticket shows risk, reward and R:R.
+  - Right-click the chart → **📄 Buy limit / Sell stop @ price** pre-fills the clicked price.
+  - Select a **Long/Short position** drawing → **📄** turns it into an order with its entry, SL, TP and quantity.
+- **On the chart**
+  - The open position is a solid line labelled with its open P&L.
+  - SL is a red line and TP a green line. Working orders are dashed lines.
+  - **Drag** SL, TP or order lines to move them.
+- **Paper Trading tab**
+  - Balance, equity, open and realized P&L, win rate and profit factor.
+  - **Positions:** click SL/TP to type a new price; **Close** closes all or part of a position.
+  - **Orders:** edit quantity, price, SL or TP; 🗑 cancels.
+  - **History:** filled, cancelled and rejected orders.
+  - **Reset account:** start again with a new balance.
+- **Netting:** there is one position per symbol. Selling while long reduces it, closes it, or reverses it.
+- **Journal:** every paper position appears in the Journal tagged **PAPER**, and is closed with the exact P&L when it closes.
+- **P&L formula:** price difference × quantity. For Forex use units (100000 = 1 lot). Commission comes from `PAPER_COMMISSION_PCT`.
+- **Telegram:** fills are sent there too, if set up.
+
+---
+
+## 12. Trade journal
 
 - **Open it:** bottom panel → **Journal** tab.
 - **Log a trade** in any of these ways:
@@ -200,10 +240,14 @@ Open **http://127.0.0.1:8000** while the backend is running (it redirects to the
   - Each row shows **N✓** (in Notion; click to open), **⏳** (syncing) or **⚠** (failed: hover for the reason, click to retry).
   - Deleting a trade moves its Notion page to the trash.
 - **P&L formula:** price difference × quantity − fees. For Forex, enter the quantity in units (100000 = 1 lot) to get P&L in the quote currency.
+  - Imported MT5 trades and paper trades use the exact P&L reported by the broker or simulator. If you edit their prices, quantity or fees, the formula is used instead.
+- **Import real trades (v1.1):** **Import** → **From MetaTrader 5** / **From Upstox** (TUTORIAL.md, Step 18).
+  - Imported rows show an **MT5** / **UPSTOX** badge.
+  - Importing again updates the rows and keeps your setup, tags, notes and screenshot.
 
 ---
 
-## 12. Keyboard shortcuts
+## 13. Keyboard shortcuts
 
 - **/**: Indicators dialog
 - **Any letter or number**: symbol search
@@ -214,14 +258,16 @@ Open **http://127.0.0.1:8000** while the backend is running (it redirects to the
 - **Ctrl+S / Ctrl+Enter** (in the Pine Editor): save / add to chart
 - **Alt+A**: create alert
 - **Alt+J**: log a trade in the journal
+- **Alt+B / Alt+S**: paper buy / sell ticket
 - **Right-click on a chart**: context menu (reset view, scales, copy price, remove all)
 
 ---
 
-## 13. Where your work is saved
+## 14. Where your work is saved
 
 - **Everything saves automatically** to the backend's SQLite database (`backend\data\tradingview.db`) within a second of any change:
-  - layout, charts, indicators and their settings, drawings, watchlist, Pine scripts, theme, alerts, journal (screenshots in `backend\data\journal\`).
+  - layout, charts, indicators and their settings, drawings, watchlist, Pine scripts, theme, alerts, journal (screenshots in `backend\data\journal\`), paper account.
+- **Candle cache (v1.1):** downloaded candles are also kept in the database, so charts reopen instantly. Clear it under ⚙ → Candle cache.
 - **Status bar:** shows **✓ Saved** (or **Saving…** / **⚠ Offline**).
 - **If the backend is offline:** changes are kept in the browser and uploaded when it comes back.
 - **Any browser on your PC** opens the same workspace.

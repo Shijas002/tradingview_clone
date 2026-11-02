@@ -508,6 +508,30 @@ class UpstoxProvider(MarketDataProvider):
             except Exception as exc:
                 self.log.debug("Upstox unsubscribe for %s failed: %s", inst.symbol, exc)
 
+    # ===================================================== account trades
+    async def get_trades_today(self) -> List[Dict[str, Any]]:
+        """Today's executed trades (needs a login token; the Analytics Token cannot read orders)."""
+        data = await self._api_get("/v2/order/trades/get-trades-for-day")
+        return list(data.get("data") or [])
+
+    async def get_trade_history(self, start: date, end: date) -> List[Dict[str, Any]]:
+        """Executed trades between two dates (last 3 financial years), all segments, all pages."""
+        out: List[Dict[str, Any]] = []
+        page = 1
+        while page <= 50:
+            data = await self._api_get(
+                f"/v2/charges/historical-trades?start_date={start.isoformat()}&end_date={end.isoformat()}"
+                f"&page_number={page}&page_size=1000"
+            )
+            rows = list(data.get("data") or [])
+            out.extend(rows)
+            meta = (data.get("meta_data") or data.get("metadata") or {}).get("page") or {}
+            total_pages = int(meta.get("total_pages") or 0)
+            if not rows or (total_pages and page >= total_pages) or len(rows) < 1000:
+                break
+            page += 1
+        return out
+
     # ============================================================ queries
     async def get_symbols(self, query: Optional[str] = None, limit: int = 200) -> List[SymbolInfo]:
         if not self.instruments.loaded:

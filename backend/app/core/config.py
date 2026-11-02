@@ -104,9 +104,40 @@ class Settings(BaseSettings):
     # SQLite file for layouts, drawings, scripts, alerts (and the journal in Phase 5).
     database_url: str = "sqlite:///./data/tradingview.db"
 
+    # ---------------------------------------------------------- candle cache
+    # Keep downloaded candles in SQLite so charts reopen instantly and providers are asked only for new bars
+    candle_cache_enabled: bool = True
+    candle_cache_max_bars: int = Field(default=300_000, ge=1_000)
+
     # --------------------------------------------------------------- alerts
     # Optional: every triggered alert is also POSTed as JSON to this URL (Discord/Slack/n8n/...)
     alert_webhook_url: str = ""
+
+    # ------------------------------------------------------------- Telegram
+    # Bot token from @BotFather and your chat id (see /api/notify/telegram/chats)
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    # What to send: any of alerts, paper, journal
+    telegram_events: str = "alerts,paper,journal"
+
+    # ------------------------------------------------------- Pine alerts
+    # Bars of history each server-side Pine alert evaluates (more = slower, more accurate long indicators)
+    pine_alert_bars: int = Field(default=500, ge=50, le=5000)
+    # How often alerts that watch the forming bar ("once per bar") are re-evaluated, seconds
+    pine_alert_interval_s: float = Field(default=10.0, ge=1.0, le=3600.0)
+
+    # ------------------------------------------------------- paper trading
+    paper_initial_balance: float = Field(default=100_000.0, gt=0)
+    paper_currency: str = "USD"
+    # Commission in percent of the traded value per fill (0.03 = 0.03 %)
+    paper_commission_pct: float = Field(default=0.0, ge=0.0, le=5.0)
+    # Log every closed paper position in the trade journal automatically
+    paper_auto_journal: bool = True
+
+    # ---------------------------------------------------- journal import
+    # Automatic import of real trades into the journal: any of mt5, upstox (empty = off)
+    journal_auto_import: str = ""
+    journal_import_interval_s: float = Field(default=120.0, ge=15.0)
 
     # ------------------------------------------------------- Notion journal
     # Internal integration secret (starts with "ntn_") from notion.so/profile/integrations
@@ -163,6 +194,14 @@ class Settings(BaseSettings):
         if not names:
             raise ValueError("UPSTOX_EXCHANGES must list at least one of NSE, BSE, MCX")
         return ",".join(dict.fromkeys(names))
+
+    @field_validator("telegram_bot_token", "telegram_chat_id")
+    @classmethod
+    def _strip_telegram(cls, value: str) -> str:
+        value = value.strip().strip('"').strip("'")
+        if any(ch.isspace() for ch in value):
+            raise ValueError("Telegram token / chat id must be on one line without spaces")
+        return value
 
     @field_validator("notion_api_key", "notion_database_id", "notion_parent_page_id")
     @classmethod
@@ -267,7 +306,10 @@ class Settings(BaseSettings):
         """Make relative SQLite paths relative to the backend folder (not the current directory)."""
         url = self.database_url.strip()
         prefix = "sqlite:///"
-        if url.startswith(prefix) and not url.startswith("sqlite:////"):
+        if url.startswith("sqlite:////"):  # absolute path: make sure its folder exists
+            Path(url[len(prefix):]).parent.mkdir(parents=True, exist_ok=True)
+            return url
+        if url.startswith(prefix):
             raw = url[len(prefix):]
             if raw and raw != ":memory:":
                 path = Path(raw)
@@ -276,6 +318,14 @@ class Settings(BaseSettings):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 return f"{prefix}{path.as_posix()}"
         return url
+
+    @property
+    def telegram_event_set(self) -> set:
+        return {x.strip().lower() for x in self.telegram_events.split(",") if x.strip()}
+
+    @property
+    def journal_import_sources(self) -> List[str]:
+        return [x for x in (y.strip().lower() for y in self.journal_auto_import.split(",")) if x in ("mt5", "upstox")]
 
     @property
     def notion_configured(self) -> bool:

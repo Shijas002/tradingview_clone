@@ -6,6 +6,8 @@ POST   /api/journal                    create an entry (optional chart screensho
 GET    /api/journal/stats              win rate, net P&L, profit factor, average R, per-symbol totals
 GET    /api/journal/export.csv         all entries as CSV (opens in Excel)
 GET    /api/journal/notion             Notion sync status
+GET    /api/journal/import             automatic import status (MT5 / Upstox)
+POST   /api/journal/import             import real trades now {"source": "mt5"|"upstox", "days": 30}
 POST   /api/journal/notion/retry       retry every entry whose sync failed
 GET    /api/journal/{id}               one entry
 PUT    /api/journal/{id}               update (send only the fields that change)
@@ -125,6 +127,9 @@ class JournalOut(JournalBase):
     notion_error: str = ""
     notion_url: Optional[str] = None
     notion_synced_at: Optional[int] = None
+    source: str = "manual"
+    external_id: Optional[str] = None
+    broker_pnl: Optional[float] = None
 
     @model_validator(mode="after")
     def _closed_needs_exit(self) -> "JournalOut":  # stored rows are already valid
@@ -144,7 +149,7 @@ def _out(e: JournalEntry, notion: NotionJournal) -> JournalOut:
         fees=e.fees or 0.0, setup=e.setup or "", tags=list(e.tags or []), rating=e.rating, notes=e.notes or "",
         pnl=pnl, r_multiple=r, has_screenshot=notion.shot_path(e) is not None, screenshot_version=e.screenshot_version or 0,
         notion_status=e.notion_status, notion_error=e.notion_error or "", notion_url=e.notion_url,
-        notion_synced_at=e.notion_synced_at,
+        notion_synced_at=e.notion_synced_at, source=e.source or "manual", external_id=e.external_id, broker_pnl=e.broker_pnl,
     )
 
 
@@ -296,6 +301,22 @@ def export_csv(request: Request) -> Response:
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
+class ImportIn(BaseModel):
+    source: Literal["mt5", "upstox"]
+    days: int = Field(default=30, ge=1, le=365)
+
+
+@router.get("/import")
+def import_status(request: Request) -> Dict[str, Any]:
+    return request.app.state.journal_import.status()
+
+
+@router.post("/import")
+async def import_now(body: ImportIn, request: Request) -> Dict[str, Any]:
+    """Import your real trades from MT5 or Upstox (closed and open positions of the last N days)."""
+    return await request.app.state.journal_import.run(body.source, body.days)
+
+
 @router.get("/notion")
 def notion_status(request: Request) -> Dict[str, Any]:
     return _notion(request).status()
@@ -328,6 +349,10 @@ async def update_entry(entry_id: str, body: JournalPatch, request: Request) -> J
         e = s.get(JournalEntry, entry_id)
         if e is None or e.notion_status == "deleting":
             raise NotFoundError(f"Journal entry {entry_id} not found")
+        if any(k in patch for k in ("entry_price", "exit_price", "quantity", "side", "fees")) or any(
+            c in body.clear for c in ("exit_price",)
+        ):
+            e.broker_pnl = None  # you edited the numbers -> the journal formula is used from now on
         for k, v in patch.items():
             setattr(e, k, v)
         for c in body.clear:

@@ -1,10 +1,95 @@
 // Chart settings: appearance + price scale of the active chart.
 import React, { useEffect } from "react";
-import { exportBackup, importBackup } from "../../api/client.js";
+import { clearCache, exportBackup, getCacheStats, getNotifyStatus, getTelegramChats, importBackup, testTelegram } from "../../api/client.js";
 import { useStore } from "../../store/useStore.js";
 import { Modal } from "../ui.jsx";
 import { TIMEZONES } from "../../chart/timezone.js";
 import { loadBroker, logoutBroker, openUpstoxLogin } from "../../broker/broker.js";
+
+function NotificationsSection() {
+  const [st, setSt] = React.useState(null);
+  const [chats, setChats] = React.useState(null);
+  const s = useStore.getState();
+  useEffect(() => {
+    getNotifyStatus().then(setSt).catch(() => setSt(null));
+  }, []);
+  if (!st) return <div className="form-row muted">Notification status unavailable</div>;
+  return (
+    <div className="broker-box">
+      <div>
+        <b>Telegram</b> · {st.telegram ? <span className="ok">● configured</span> : <span className="bad">● not configured</span>}
+        {st.telegram && ` · sends: ${st.telegram_events.join(", ")}`}
+      </div>
+      {!st.telegram && <div className="muted">Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in backend/.env (TUTORIAL.md, Step 17).</div>}
+      {st.last_error && <div className="bad">{st.last_error}</div>}
+      <div className="muted">
+        Webhook: {st.webhook ? "on" : "off"} · sent {st.sent} · failed {st.failed}
+      </div>
+      <div className="btn-row">
+        {st.telegram && (
+          <button
+            className="btn small"
+            onClick={() =>
+              testTelegram()
+                .then(() => s.toast("Test message sent to Telegram", "ok", 2500))
+                .catch((e) => s.toast(e.message))
+            }
+          >
+            Send test
+          </button>
+        )}
+        <button
+          className="btn small"
+          onClick={() =>
+            getTelegramChats()
+              .then((r) => setChats(r))
+              .catch((e) => s.toast(e.message))
+          }
+          title="Lists the chats that messaged your bot - copy the id into TELEGRAM_CHAT_ID"
+        >
+          Find my chat id
+        </button>
+      </div>
+      {chats && (
+        <div className="muted">
+          {chats.chats.length ? chats.chats.map((c) => <div key={c.chat_id}>{c.chat_id} · {c.name} ({c.type})</div>) : null}
+          <div>{chats.hint}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CacheSection() {
+  const [st, setSt] = React.useState(null);
+  const s = useStore.getState();
+  const refresh = () => getCacheStats().then(setSt).catch(() => setSt(null));
+  useEffect(() => {
+    refresh();
+  }, []);
+  if (!st) return <div className="form-row muted">Cache status unavailable</div>;
+  return (
+    <div className="form-row">
+      <span className="settings-note">
+        {st.enabled ? `${st.bars.toLocaleString()} bars cached in ${st.series.length} series · ${st.hits} hits / ${st.misses} misses` : "Candle cache is off (CANDLE_CACHE_ENABLED)"}
+      </span>
+      <button
+        className="btn small"
+        onClick={() =>
+          window.confirm("Delete all cached candles? They are downloaded again when needed.") &&
+          clearCache()
+            .then((r) => {
+              s.toast(`${r.removed_bars} cached bars removed`, "ok", 2500);
+              refresh();
+            })
+            .catch((e) => s.toast(e.message))
+        }
+      >
+        Clear
+      </button>
+    </div>
+  );
+}
 
 function BrokerSection() {
   const broker = useStore((s) => s.broker);
@@ -133,6 +218,15 @@ export default function ChartSettings() {
           <span>Alert sound</span>
           <input type="checkbox" checked={settings.alertSound !== false} onChange={(e) => s.updateSettings({ alertSound: e.target.checked })} />
         </label>
+        <div className="form-group-title">Paper trading</div>
+        <label className="form-row">
+          <span>Show positions &amp; orders on charts</span>
+          <input type="checkbox" checked={settings.showPaperTrades !== false} onChange={(e) => s.updateSettings({ showPaperTrades: e.target.checked })} />
+        </label>
+        <div className="form-group-title">Notifications</div>
+        <NotificationsSection />
+        <div className="form-group-title">Candle cache</div>
+        <CacheSection />
         <div className="form-group-title">Indian broker</div>
         <BrokerSection />
         <div className="form-group-title">Backup</div>

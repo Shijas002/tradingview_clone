@@ -4,11 +4,13 @@ import { useStore } from "../store/useStore.js";
 import PineEditor from "./PineEditor.jsx";
 import StrategyTester from "./StrategyTester.jsx";
 import JournalPanel from "./JournalPanel.jsx";
+import PaperPanel from "./PaperPanel.jsx";
 import { Icon } from "./Icons.jsx";
 
 export const BOTTOM_TABS = [
   { id: "pine", label: "Pine Editor", Comp: PineEditor },
   { id: "tester", label: "Strategy Tester", Comp: StrategyTester },
+  { id: "paper", label: "Paper Trading", Comp: PaperPanel },
   { id: "journal", label: "Journal", Comp: JournalPanel },
 ];
 
